@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>指数基金定投决策系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <nav class="nav">
+            <h1>📊 指数基金定投决策</h1>
+            <div class="nav-tabs">
+                <button class="tab active" data-page="timing">🎯 定投决策</button>
+                <button class="tab" data-page="screening">📋 基金筛选</button>
+                <button class="tab" data-page="detail">🔍 基金详情</button>
+                <button class="tab" data-page="backtest">📈 回测报告</button>
+                <button class="tab" data-page="config">⚙️ 策略配置</button>
+            </div>
+        </nav>
+        <main id="page-content"></main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

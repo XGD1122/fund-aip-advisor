@@ -1,0 +1,79 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #333; }
+.nav { background: #1a1a2e; color: white; padding: 12px 24px; display: flex; align-items: center; gap: 24px; }
+.nav h1 { font-size: 18px; }
+.nav-tabs { display: flex; gap: 8px; }
+.tab { background: transparent; color: #aaa; border: none; padding: 8px 16px; cursor: pointer; border-radius: 6px; font-size: 14px; }
+.tab.active { background: #16213e; color: white; }
+.tab:hover { color: white; }
+
+main { max-width: 1400px; margin: 16px auto; padding: 0 16px; }
+
+.filter-bar { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.filter-bar label { font-size: 13px; color: #666; }
+.filter-bar select, .filter-bar input { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+.btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+.btn-primary { background: #4CAF50; color: white; }
+.btn-primary:hover { background: #43A047; }
+.btn-warning { background: #FF9800; color: white; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-back { background: #607D8B; color: white; padding: 6px 14px; font-size: 12px; }
+.btn-back:hover { background: #546E7A; }
+
+.data-table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.data-table th { background: #f5f5f5; padding: 10px 12px; text-align: left; font-size: 12px; font-weight: 600; color: #666; border-bottom: 2px solid #eee; }
+.data-table td { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+.data-table tr:hover { background: #fafafa; }
+.rank-1 { color: #FF9800; font-weight: bold; }
+.score-high { color: #4CAF50; font-weight: bold; }
+.score-low { color: #f44336; }
+
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.card { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.card h3 { font-size: 15px; margin-bottom: 12px; color: #333; }
+.chart-container { width: 100%; height: 420px; }
+
+.metrics-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.metric-card { flex: 1; min-width: 120px; background: white; border-radius: 8px; padding: 14px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.metric-card .label { font-size: 11px; color: #888; margin-bottom: 4px; }
+.metric-card .value { font-size: 22px; font-weight: bold; }
+.value-green { color: #4CAF50; }
+.value-red { color: #f44336; }
+.value-orange { color: #FF9800; }
+
+.loading { text-align: center; padding: 40px; color: #999; }
+.error { text-align: center; padding: 40px; color: #f44336; }
+.empty { text-align: center; padding: 60px; color: #bbb; font-size: 14px; }
+
+.config-section { background: white; border-radius: 8px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.weight-slider { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+.weight-slider input[type=range] { flex: 1; }
+.weight-slider .dim-label { width: 80px; font-size: 13px; }
+.weight-slider .dim-value { width: 40px; text-align: center; font-weight: bold; font-size: 14px; }
+
+/* 定投决策页面布局 */
+.timing-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+.timing-left, .timing-right { min-width: 0; }
+
+/* 信号徽章 */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.badge-green { background: #E8F5E9; color: #2E7D32; }
+.badge-red { background: #FFEBEE; color: #C62828; }
+.badge-orange { background: #FFF3E0; color: #E65100; }
+.badge-gold { background: #FFF8E1; color: #F57F17; }
+.badge-blue { background: #E3F2FD; color: #1565C0; }
+.badge-purple { background: #F3E5F5; color: #7B1FA2; }
+
+/* 持仓行 */
+.portfolio-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.portfolio-row input { padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+
+/* 导航适配更多tab */
+.nav-tabs { flex-wrap: wrap; }
+
+@media (max-width: 768px) {
+    .nav { flex-direction: column; gap: 8px; }
+    .detail-grid { grid-template-columns: 1fr; }
+    .filter-bar { flex-direction: column; align-items: stretch; }
+    .timing-layout { grid-template-columns: 1fr; }
+}
