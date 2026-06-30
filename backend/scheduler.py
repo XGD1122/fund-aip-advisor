@@ -18,25 +18,9 @@ def job_fetch_fund_list():
 
 
 def job_fetch_nav_daily():
-    """每日拉取指数型基金净值数据"""
-    print(f"[{datetime.now()}] 拉取净值数据...")
-    conn = get_connection()
-    codes = [r["code"] for r in conn.execute(
-        "SELECT code FROM fund_basic WHERE fund_type LIKE '指数型%'"
-    ).fetchall()]
-    conn.close()
-
-    count = 0
-    total = len(codes)
-    for code in codes:
-        df = fetch_fund_nav(code)
-        if not df.empty:
-            df = clean_nav_data(df)
-            save_nav_data(df)
-            count += 1
-            if count % 50 == 0:
-                print(f"  已拉取 {count}/{total} 只基金净值")
-    print(f"  净值更新完成: {count}/{total}")
+    """每日拉取净值 + 更新信号 + 重新排名"""
+    from engine.rank import refresh_all_data
+    refresh_all_data()
 
 
 def job_fetch_benchmark():
