@@ -35,6 +35,8 @@ def fetch_all_fund_list(fund_type_filter: str = "指数型") -> pd.DataFrame:
         result["fund_type"] = df.iloc[:, 3].astype(str)
         # 仅保留指数型基金
         result = result[result["fund_type"].str.contains(fund_type_filter, na=False)]
+        # 剔除商品ETF（黄金、豆粕、有色金属、能源化工等）
+        result = result[~result["fund_type"].str.contains("其他", na=False)]
         print(f"  指数型基金数量: {len(result)}")
         return result.reset_index(drop=True)
     except Exception as e:
