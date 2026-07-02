@@ -2,7 +2,11 @@ import akshare as ak
 import pandas as pd
 import time
 import random
+import threading
 from config import REQUEST_DELAY_MIN, REQUEST_DELAY_MAX
+
+# py_mini_racer (V8) 不支持多线程并发，需要全局锁保护 akshare 调用
+_AK_LOCK = threading.Lock()
 
 
 def _delay():
@@ -45,10 +49,11 @@ def fetch_all_fund_list(fund_type_filter: str = "指数型") -> pd.DataFrame:
 
 
 def fetch_fund_nav(code: str) -> pd.DataFrame:
-    """获取单只基金的历史净值（带重试）"""
+    """获取单只基金的历史净值（带重试，线程安全）"""
     _delay()
     try:
-        df = _retry_fetch(ak.fund_open_fund_info_em, symbol=code, indicator="单位净值走势")
+        with _AK_LOCK:
+            df = _retry_fetch(ak.fund_open_fund_info_em, symbol=code, indicator="单位净值走势")
         if df is None or df.empty:
             return pd.DataFrame()
         # 新版 akshare 列: 净值日期, 单位净值, 日增长率 (无累计净值列)
