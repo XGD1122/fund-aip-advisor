@@ -10,7 +10,10 @@ from config import TOP_N_DEFAULT, FUND_TYPE_FILTER, NAV_MAX_STALE_DAYS, NAV_MIN_
 
 
 def refresh_all_data():
-    """增量刷新：只拉取缺失最新净值的基金，不重拉全历史"""
+    """增量刷新：多线程并发拉取过期基金的净值"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
     today = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -32,20 +35,32 @@ def refresh_all_data():
         update_signals()
         return
 
-    print(f"[{datetime.now()}] {total_funds} 只基金数据过期，开始增量更新...", flush=True)
+    print(f"[{datetime.now()}] {total_funds} 只基金数据过期，{5}线程并发拉取...", flush=True)
 
-    # 2. 只拉取过期基金
-    fetched = 0
-    for i, code in enumerate(stale_codes):
+    # 2. 多线程并发拉取
+    fetched = [0]
+    done = [0]
+    lock = threading.Lock()
+
+    def _fetch_one(code):
         df = fetch_fund_nav(code)
         if not df.empty:
             df = clean_nav_data(df)
             save_nav_data(df)
-            fetched += 1
-        if (i + 1) % 200 == 0:
-            print(f"  进度: {i+1}/{total_funds}", flush=True)
+            with lock:
+                fetched[0] += 1
+        with lock:
+            done[0] += 1
+            if done[0] % 500 == 0:
+                print(f"  进度: {done[0]}/{total_funds}", flush=True)
+        return True
 
-    print(f"  净值更新完成: {fetched}/{total_funds}", flush=True)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_fetch_one, code) for code in stale_codes]
+        for f in as_completed(futures):
+            pass  # 所有结果在 _fetch_one 内部处理
+
+    print(f"  净值更新完成: {fetched[0]}/{total_funds}", flush=True)
 
     # 3. 更新技术信号
     update_signals()

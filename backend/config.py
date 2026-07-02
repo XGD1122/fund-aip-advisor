@@ -159,8 +159,8 @@ TIMING_WEIGHTS = {
 # ============================================================
 RISK_FREE_RATE = 0.017        # 当前中国10年期国债收益率 ~1.7%
 TOP_N_DEFAULT = 20
-REQUEST_DELAY_MIN = 0.5       # 最小请求间隔（秒）
-REQUEST_DELAY_MAX = 1.5       # 最大请求间隔（秒），避免请求过快被限流
+REQUEST_DELAY_MIN = 0.05      # 最小请求间隔（秒）
+REQUEST_DELAY_MAX = 0.2       # 最大请求间隔（秒）
 TRAIN_TEST_SPLIT_DATE = "2024-01-01"
 NAV_MAX_STALE_DAYS = 90       # 净值过期天数：超过此天数无更新的基金视为已停售，排除出排名
 NAV_MIN_RECORDS = 60          # 最少净值记录数：不足此数量的基金数据不充分，排除出排名
