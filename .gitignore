@@ -16,6 +16,7 @@ fetch_detail.py
 # 临时文件
 *.tmp
 *.log
+refresh_log.txt
 
 # IDE
 .vscode/

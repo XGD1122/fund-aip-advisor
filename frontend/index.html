@@ -3,23 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>指数基金定投决策系统</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <title>今日买入推荐 - 指数基金 Top 20</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div id="app">
-        <nav class="nav">
-            <h1>📊 指数基金定投决策</h1>
-            <div class="nav-tabs">
-                <button class="tab active" data-page="timing">🎯 定投决策</button>
-                <button class="tab" data-page="screening">📋 基金筛选</button>
-                <button class="tab" data-page="detail">🔍 基金详情</button>
-                <button class="tab" data-page="backtest">📈 回测报告</button>
-                <button class="tab" data-page="config">⚙️ 策略配置</button>
+        <header class="header">
+            <h1>今日值得买入的指数基金 Top 20</h1>
+            <div class="header-right">
+                <span id="freshness">加载中...</span>
+                <button id="refresh-btn" class="btn">刷新数据</button>
             </div>
-        </nav>
-        <main id="page-content"></main>
+        </header>
+        <main>
+            <div id="loading">正在计算买入时机...</div>
+            <div id="error" style="display:none"></div>
+            <table id="table" style="display:none">
+                <thead>
+                    <tr>
+                        <th>#</th><th>代码</th><th>名称</th><th>评分</th>
+                        <th>近5日</th><th>近20日</th><th>近1年</th>
+                        <th>估值分位</th><th>回撤</th><th>均线</th>
+                        <th>RSI</th><th>连跌</th><th>提示</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody"></tbody>
+            </table>
+        </main>
     </div>
     <script src="app.js"></script>
 </body>
