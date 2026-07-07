@@ -35,7 +35,16 @@ cd fund-aip-advisor
 pip install -r backend/requirements.txt
 ```
 
-### 3. 启动系统
+### 3. 初始化数据（首次运行，约 30-60 分钟）
+
+```bash
+cd backend
+python init_data.py
+```
+
+这一步会：建表 → 拉取全市场指数型基金列表 → 拉取历史净值 → 计算技术信号。
+
+### 4. 启动系统
 
 **Windows — 双击 `start.bat`**
 
@@ -46,21 +55,17 @@ python start.py
 
 浏览器自动打开 `http://localhost:3000`
 
-### 4. 首次运行需要数据
-
-数据库文件 `data/fund.db` 不包含在仓库中（太大）。首次运行前需要初始化数据，或从已有备份恢复。
-
 ## 项目结构
 
 ```
 ├── backend/
 │   ├── main.py              # FastAPI 入口（单一 /api/top20 端点 + 5分钟缓存）
 │   ├── config.py            # 阈值/过滤参数
-│   ├── refresh_data.py      # 数据刷新脚本（供计划任务调用）
+│   ├── init_data.py         # 首次数据初始化（克隆后运行一次）
+│   ├── refresh_data.py      # 每日数据刷新脚本
 │   ├── engine/
 │   │   ├── top20.py         # 5维评分引擎（估值+均线+回撤+质量+技术）
-│   │   ├── indicators.py    # 技术指标计算（MA/MACD/RSI/复权）
-│   │   └── signals.py       # 信号计算
+│   │   └── indicators.py    # 技术指标计算（MA/MACD/RSI/复权）
 │   ├── data/
 │   │   ├── fetcher.py       # AkShare 数据采集
 │   │   └── cleaner.py       # 数据清洗
