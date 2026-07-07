@@ -12,7 +12,7 @@ BACKEND_DIR = os.path.join(BASE, "backend")
 FRONTEND_DIR = os.path.join(BASE, "frontend")
 
 print("=" * 50)
-print("   📊 指数基金定投决策系统 启动中...")
+print("   📊 指数基金 Top20 买入推荐 启动中...")
 print("=" * 50)
 
 # 杀掉旧端口进程
