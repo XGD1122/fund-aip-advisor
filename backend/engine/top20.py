@@ -427,7 +427,7 @@ def _score_technical(rsi: float, dif: float, dea: float, hist: float) -> float:
 # ============================================================
 
 def refresh_all_data():
-    """增量刷新：多线程并发拉取过期基金的净值"""
+    """全量数据刷新（首次初始化用，耗时 30-60 分钟）"""
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = get_connection()
@@ -473,14 +473,70 @@ def refresh_all_data():
     print(f"[{datetime.now()}] Refresh complete", flush=True)
 
 
+def refresh_daily():
+    """每日轻量刷新：只拉取净值过期的基金，只更新有变化的信号（约 3-10 分钟）"""
+    today = datetime.now()
+    yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    day_before = (today - timedelta(days=2)).strftime("%Y-%m-%d")
+
+    conn = get_connection()
+    # 只找净值确实过期的基金（宽容 2 天，因为非交易日没有新净值）
+    stale = conn.execute("""
+        SELECT b.code FROM fund_basic b
+        WHERE b.fund_type LIKE ?
+        AND (SELECT MAX(date) FROM fund_nav WHERE code=b.code) <= ?
+    """, (FUND_TYPE_FILTER + "%", day_before)).fetchall()
+    conn.close()
+
+    stale_codes = [r[0] for r in stale]
+    if len(stale_codes) == 0:
+        print(f"[{datetime.now()}] All NAV up to date", flush=True)
+        return
+
+    print(f"[{datetime.now()}] {len(stale_codes)} funds need NAV update, 2 threads...", flush=True)
+    updated_codes = []
+    done = [0]
+    lock = threading.Lock()
+
+    def _fetch_one(code):
+        df = fetch_fund_nav(code)
+        if not df.empty:
+            df = clean_nav_data(df)
+            save_nav_data(df)
+            with lock:
+                updated_codes.append(code)
+        with lock:
+            done[0] += 1
+            if done[0] % 200 == 0:
+                print(f"  {done[0]}/{len(stale_codes)}", flush=True)
+        return True
+
+    # 只用 2 线程，降低被限流概率
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(_fetch_one, code) for code in stale_codes]
+        for f in as_completed(futures):
+            pass
+
+    print(f"  NAV updated: {len(updated_codes)}/{len(stale_codes)}", flush=True)
+
+    # 只更新有净值变化的基金的信号
+    if updated_codes:
+        _update_signals_for_codes(updated_codes)
+    print(f"[{datetime.now()}] Daily refresh complete", flush=True)
+
+
 def update_signals():
-    """批量更新技术信号"""
+    """全量更新所有基金的信号（初始化和全量刷新用）"""
     conn = get_connection()
     codes = [r["code"] for r in conn.execute(
         "SELECT code FROM fund_basic WHERE fund_type LIKE ?", (FUND_TYPE_FILTER + "%",)
     ).fetchall()]
     conn.close()
+    _update_signals_for_codes(codes)
 
+
+def _update_signals_for_codes(codes: list):
+    """只更新指定基金列表的信号（增量更新）"""
     total = len(codes)
     for i, code in enumerate(codes):
         df = _calc_signals_for_fund(code)

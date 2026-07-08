@@ -3,9 +3,9 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.database import init_db
-from engine.top20 import refresh_all_data
+from engine.top20 import refresh_daily
 
 if __name__ == "__main__":
     init_db()
-    refresh_all_data()
+    refresh_daily()
     print("数据刷新完成")
