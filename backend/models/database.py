@@ -98,6 +98,20 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL,
+            name TEXT,
+            buy_date TEXT NOT NULL,
+            buy_nav REAL NOT NULL,
+            shares REAL DEFAULT 0,
+            buy_amount REAL DEFAULT 0,
+            notes TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+
     cur.execute("CREATE INDEX IF NOT EXISTS idx_nav_code_date ON fund_nav(code, date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_score_date ON fund_score(calc_date, mode)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_code_date ON fund_signal(code, date)")

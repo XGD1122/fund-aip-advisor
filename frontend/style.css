@@ -65,3 +65,54 @@ tr:hover{background:#fafafa}
 :root{--c-up:#e15241;--c-border:#e8e8e8;--c-text:#888}
 
 @media (max-width:768px){.chart-row{flex-direction:column}.stat-grid{grid-template-columns:repeat(3,1fr)}.modal-panel{width:96%}}
+
+/* 持仓面板 */
+.portfolio-section{max-width:1500px;margin:24px auto;padding:0 16px}
+.portfolio-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.portfolio-header h2{font-size:16px;font-weight:600}
+.btn-sm{padding:3px 12px;font-size:11px}
+.btn-ghost{background:#fff;color:#666;border:1px solid #ddd}
+.btn-ghost:hover{background:#f5f5f5}
+.btn-ghost-sm{padding:2px 8px;font-size:10px;background:none;border:1px solid #ddd;border-radius:3px;cursor:pointer;color:#888}
+.btn-ghost-sm:hover{background:#ffebee;color:#c62828;border-color:#f44336}
+
+/* 汇总卡片 */
+.portfolio-summary{margin-bottom:12px}
+.summary-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px}
+.scard{background:#fff;padding:12px 16px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.05);text-align:center}
+.scard .slbl{display:block;font-size:10px;color:#888;margin-bottom:3px}
+.scard .sval{display:block;font-size:16px;font-weight:700}
+.scard .sval.up{color:#f44336}
+.scard .sval.down{color:#4caf50}
+.sector-bar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.sbar-item{font-size:10px;padding:2px 8px;background:#e3f2fd;border-radius:10px;color:#1565c0}
+.sbar-item b{color:#0d47a1}
+.warn-msg{font-size:11px;color:#e65100;padding:4px 0}
+.rebalance-msg{font-size:11px;color:#1565c0;padding:4px 0;margin-bottom:6px}
+.sell-priority{font-size:11px;color:#c62828;padding:4px 0;margin-bottom:6px}
+.empty-hint{text-align:center;padding:24px;color:#aaa;font-size:13px;background:#fff;border-radius:8px}
+
+/* 持仓表格 */
+.portfolio-list{margin-bottom:16px}
+.pf-table{width:100%}
+.pf-table th{font-size:10px}
+.pf-table td{font-size:11px}
+
+/* 添加持仓表单 */
+.add-holding-form{background:#fff;padding:16px 20px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.06);margin-bottom:14px}
+.add-holding-form h3{font-size:14px;font-weight:600;margin-bottom:10px}
+.form-row{display:flex;gap:10px;margin-bottom:8px;align-items:center}
+.form-row input{padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px;flex:1}
+.form-hint{font-size:12px;color:#4caf50;white-space:nowrap}
+.form-actions{display:flex;gap:8px;margin-top:8px}
+
+/* 买卖建议 */
+.detail-advice{margin-top:12px;border-top:1px solid #eee;padding-top:12px}
+.detail-advice h3{font-size:13px;font-weight:600;margin-bottom:8px}
+.advice-card{background:#f9f9f9;border-radius:6px;padding:10px 14px;margin-bottom:8px}
+.advice-card .advice-title{font-size:13px;font-weight:700;margin-bottom:6px}
+.advice-card .advice-body{font-size:11px;line-height:1.8}
+.advice-body p{margin-bottom:3px}
+.advice-body .risk{color:#e65100;background:#fff3e0;padding:4px 8px;border-radius:4px;margin-top:4px}
+
+@media (max-width:768px){.summary-cards{grid-template-columns:repeat(2,1fr)}.form-row{flex-direction:column}}

@@ -277,4 +277,234 @@ document.getElementById("refresh-btn").onclick = function () {
     load(true).finally(function () { this.textContent = "刷新数据"; this.disabled = false; }.bind(this));
 };
 
+// ============================================================
+// 买卖建议（详情弹窗内）
+// ============================================================
+function renderAdvice(d) {
+    var container = document.getElementById("detail-advice");
+    container.innerHTML = '<div class="loading">加载买卖建议...</div>';
+    fetch(API + "/fund/" + d.code + "/advice")
+        .then(function (r) { return r.json(); })
+        .then(function (adv) {
+            if (adv.buy && adv.sell) {
+                var h = '<h3>买卖建议</h3>';
+                // 买入建议
+                var b = adv.buy;
+                h += '<div class="advice-card">';
+                h += '<div class="advice-title">买入建议：' + b.buy_urgency + '</div>';
+                h += '<div class="advice-body">';
+                h += '<p>估值状态：<b>' + b.valuation.label + '</b>（分位 ' + b.valuation.pct + '%）</p>';
+                h += '<p>建议仓位：<b>' + b.suggested_position + '</b></p>';
+                h += '<p>入场计划：' + b.batch_plan + '</p>';
+                if (b.entry_points && b.entry_points.length > 0) {
+                    h += '<p>参考价位：';
+                    b.entry_points.forEach(function (ep) {
+                        h += '<span class="tag">' + ep.level + ' ' + ep.price + '（' + ep.label + '）</span> ';
+                    });
+                    h += '</p>';
+                }
+                if (b.risk_warnings && b.risk_warnings.length > 0) {
+                    h += '<p class="risk">⚠ ';
+                    b.risk_warnings.forEach(function (w) { h += w + '<br>'; });
+                    h += '</p>';
+                }
+                h += '</div></div>';
+
+                // 卖出信号
+                var s = adv.sell;
+                h += '<div class="advice-card">';
+                h += '<div class="advice-title">卖出信号：' + s.summary + '</div>';
+                h += '<div class="advice-body">';
+                if (s.profit_pct !== null && s.profit_pct !== undefined) {
+                    h += '<p>持仓盈亏：<b class="' + (s.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(s.profit_pct) + '</b></p>';
+                }
+                h += '<p>当前净值：' + s.current_nav + ' | RSI：' + s.rsi + '</p>';
+                s.signals.forEach(function (sig) {
+                    h += '<p>' + sig.icon + ' <b>' + sig.type + '</b>：' + sig.msg + '</p>';
+                });
+                h += '</div></div>';
+                container.innerHTML = h;
+            } else {
+                container.innerHTML = '<div class="error">建议加载失败</div>';
+            }
+        }).catch(function (e) {
+            container.innerHTML = '<div class="error">建议加载失败: ' + e.message + '</div>';
+        });
+}
+
+// 修改 showDetail 同时加载建议
+var _origShowDetail = showDetail;
+showDetail = function (code, name) {
+    _origShowDetail(code, name);
+    var d = { code: code, name: name };
+    renderAdvice(d);
+};
+
+// ============================================================
+// 持仓管理
+// ============================================================
+
+function loadPortfolio() {
+    fetch(API + "/portfolio/analysis")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            renderPortfolioSummary(data);
+            renderPortfolioList(data);
+        }).catch(function (e) {
+            console.error("加载持仓失败:", e);
+        });
+}
+
+function renderPortfolioSummary(data) {
+    var el = document.getElementById("portfolio-summary");
+    if (data.status === "empty") {
+        el.innerHTML = '<div class="empty-hint">暂无持仓，点击「＋ 添加持仓」开始管理</div>';
+        return;
+    }
+    var h = '<div class="summary-cards">';
+    h += '<div class="scard"><span class="slbl">总投入</span><span class="sval">¥' + data.total_invested.toLocaleString() + '</span></div>';
+    h += '<div class="scard"><span class="slbl">当前市值</span><span class="sval">¥' + data.total_value.toLocaleString() + '</span></div>';
+    var pcls = data.total_profit >= 0 ? "up" : "down";
+    h += '<div class="scard"><span class="slbl">总盈亏</span><span class="sval ' + pcls + '">' + fmt(data.total_profit_pct) + ' (¥' + Math.round(data.total_profit).toLocaleString() + ')</span></div>';
+    h += '<div class="scard"><span class="slbl">持仓数</span><span class="sval">' + data.holdings_count + '只</span></div>';
+    h += '</div>';
+
+    // 赛道分布
+    if (data.sector_allocation && Object.keys(data.sector_allocation).length > 0) {
+        h += '<div class="sector-bar">';
+        Object.keys(data.sector_allocation).forEach(function (k) {
+            var v = data.sector_allocation[k];
+            h += '<span class="sbar-item" title="' + k + ' ' + v.pct + '%">' + k + ' <b>' + v.pct + '%</b></span>';
+        });
+        h += '</div>';
+    }
+
+    // 警告
+    if (data.warnings && data.warnings.length > 0) {
+        data.warnings.forEach(function (w) {
+            h += '<div class="warn-msg">⚠ ' + w + '</div>';
+        });
+    }
+    // 再平衡建议
+    if (data.rebalance_advice) {
+        h += '<div class="rebalance-msg">💡 ' + data.rebalance_advice + '</div>';
+    }
+    // 卖出优先
+    if (data.sell_priority && data.sell_priority.length > 0) {
+        h += '<div class="sell-priority">🔴 优先关注卖出：';
+        data.sell_priority.forEach(function (sp) {
+            h += '<span class="tag r">' + sp.name + '(' + fmt(sp.profit_pct) + ')</span> ';
+        });
+        h += '</div>';
+    }
+    el.innerHTML = h;
+}
+
+function renderPortfolioList(data) {
+    var el = document.getElementById("portfolio-list");
+    if (data.status === "empty" || !data.details) {
+        el.innerHTML = "";
+        return;
+    }
+    var h = '<table class="pf-table"><thead><tr>';
+    h += '<th>代码</th><th>名称</th><th>买入日</th><th>成本</th><th>现价</th><th>盈亏</th><th>赛道</th><th>卖出建议</th><th>操作</th>';
+    h += '</tr></thead><tbody>';
+    data.details.forEach(function (d) {
+        h += '<tr>';
+        h += '<td class="code">' + d.code + '</td>';
+        h += '<td class="name" title="' + d.name + '">' + d.name + '</td>';
+        h += '<td>' + d.buy_date + '</td>';
+        h += '<td>' + d.buy_nav + '</td>';
+        h += '<td>' + d.current_nav + '</td>';
+        h += '<td class="' + (d.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(d.profit_pct) + '</td>';
+        h += '<td><span class="tag">' + d.sector + '</span></td>';
+        var sa = d.sell_action_level;
+        var scls = sa >= 3 ? 'r' : sa >= 2 ? 'o' : sa >= 1 ? 'y' : 'g';
+        h += '<td><span class="tag ' + scls + '">' + d.sell_summary + '</span></td>';
+        h += '<td><button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
+        h += '</tr>';
+    });
+    h += '</tbody></table>';
+    el.innerHTML = h;
+}
+
+function deleteHolding(id) {
+    if (!confirm("确认删除这笔持仓记录？")) return;
+    fetch(API + "/portfolio/" + id, { method: "DELETE" })
+        .then(function (r) { return r.json(); })
+        .then(function () { loadPortfolio(); });
+}
+
+// 添加持仓按钮
+document.getElementById("add-holding-btn").onclick = function () {
+    document.getElementById("add-holding-form").style.display = "block";
+    this.style.display = "none";
+};
+
+document.getElementById("hf-cancel").onclick = function () {
+    document.getElementById("add-holding-form").style.display = "none";
+    document.getElementById("add-holding-btn").style.display = "";
+    clearHoldingForm();
+};
+
+// 输入代码自动补全名称
+document.getElementById("hf-code").oninput = function () {
+    var code = this.value.trim();
+    var nameEl = document.getElementById("hf-name");
+    if (code.length === 6) {
+        nameEl.textContent = "查询中...";
+        fetch(API + "/fund/" + code)
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                nameEl.textContent = d.name || "未找到";
+            }).catch(function () { nameEl.textContent = "未找到"; });
+    } else {
+        nameEl.textContent = "";
+    }
+};
+
+document.getElementById("hf-save").onclick = function () {
+    var code = document.getElementById("hf-code").value.trim();
+    var date = document.getElementById("hf-date").value;
+    var nav = parseFloat(document.getElementById("hf-nav").value);
+    var amount = parseFloat(document.getElementById("hf-amount").value) || 0;
+    var notes = document.getElementById("hf-notes").value.trim();
+
+    if (!code || !date || !nav) { alert("请填写代码、买入日期和净值"); return; }
+    if (isNaN(nav) || nav <= 0) { alert("净值格式错误"); return; }
+
+    fetch(API + "/portfolio/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code, buy_date: date, buy_nav: nav, buy_amount: amount, notes: notes })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+          if (d.error) { alert(d.error); return; }
+          document.getElementById("add-holding-form").style.display = "none";
+          document.getElementById("add-holding-btn").style.display = "";
+          clearHoldingForm();
+          loadPortfolio();
+      });
+};
+
+function clearHoldingForm() {
+    document.getElementById("hf-code").value = "";
+    document.getElementById("hf-date").value = "";
+    document.getElementById("hf-nav").value = "";
+    document.getElementById("hf-amount").value = "";
+    document.getElementById("hf-notes").value = "";
+    document.getElementById("hf-name").textContent = "";
+}
+
+function addHoldingQuick(code) {
+    // 快速添加：弹出表单并预填代码
+    document.getElementById("add-holding-form").style.display = "block";
+    document.getElementById("add-holding-btn").style.display = "none";
+    document.getElementById("hf-code").value = code;
+    document.getElementById("hf-code").dispatchEvent(new Event("input"));
+    document.getElementById("hf-date").focus();
+}
+
+// 持仓自动加载
+loadPortfolio();
 load(false);

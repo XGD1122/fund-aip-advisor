@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.database import init_db, get_connection
 from datetime import datetime, timedelta
 import time
+from pydantic import BaseModel
+from typing import Optional
 
 app = FastAPI(title="指数基金买入推荐", version="2.0.0")
 
@@ -172,6 +174,84 @@ def api_fund_detail(code: str):
         "returns": rets,
         "record_count": len(navs),
     }
+
+
+# ============================================================
+# 持仓管理 API
+# ============================================================
+
+class PortfolioAdd(BaseModel):
+    code: str
+    buy_date: str          # YYYY-MM-DD
+    buy_nav: float
+    shares: Optional[float] = 0
+    buy_amount: Optional[float] = 0
+    notes: Optional[str] = ""
+
+
+@app.post("/api/portfolio/add")
+def api_portfolio_add(body: PortfolioAdd):
+    """添加一只持仓"""
+    conn = get_connection()
+    basic = conn.execute("SELECT name FROM fund_basic WHERE code=?", (body.code,)).fetchone()
+    if not basic:
+        conn.close()
+        return {"error": "基金不存在"}
+    name = basic["name"]
+    conn.execute(
+        "INSERT INTO portfolio (code, name, buy_date, buy_nav, shares, buy_amount, notes) VALUES (?,?,?,?,?,?,?)",
+        (body.code, name, body.buy_date, body.buy_nav, body.shares, body.buy_amount, body.notes)
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "message": f"已添加 {name}"}
+
+
+@app.get("/api/portfolio")
+def api_portfolio_list():
+    """持仓列表 + 实时盈亏 + 卖出信号"""
+    from engine.advisor import analyze_portfolio
+    return analyze_portfolio()
+
+
+@app.delete("/api/portfolio/{holding_id}")
+def api_portfolio_delete(holding_id: int):
+    """删除一笔持仓"""
+    conn = get_connection()
+    conn.execute("DELETE FROM portfolio WHERE id=?", (holding_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "message": "已删除"}
+
+
+@app.put("/api/portfolio/{holding_id}")
+def api_portfolio_update(holding_id: int, notes: str = ""):
+    """更新持仓备注"""
+    conn = get_connection()
+    conn.execute("UPDATE portfolio SET notes=? WHERE id=?", (notes, holding_id))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.get("/api/portfolio/analysis")
+def api_portfolio_analysis():
+    """持仓组合分析"""
+    from engine.advisor import analyze_portfolio
+    return analyze_portfolio()
+
+
+@app.get("/api/fund/{code}/advice")
+def api_fund_advice(code: str):
+    """单只基金的买卖建议"""
+    from engine.advisor import get_buy_advice, get_sell_signals
+
+    buy = get_buy_advice(code)
+    if "error" in buy:
+        return buy
+
+    sell = get_sell_signals(code)
+    return {"buy": buy, "sell": sell}
 
 
 @app.get("/api/health")

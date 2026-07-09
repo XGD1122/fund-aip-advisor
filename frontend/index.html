@@ -31,6 +31,41 @@
                 <tbody id="tbody"></tbody>
             </table>
         </main>
+
+        <!-- 我的持仓 -->
+        <section class="portfolio-section">
+            <div class="portfolio-header">
+                <h2>我的持仓</h2>
+                <button id="add-holding-btn" class="btn btn-sm">＋ 添加持仓</button>
+            </div>
+
+            <!-- 持仓汇总卡片 -->
+            <div id="portfolio-summary" class="portfolio-summary"></div>
+
+            <!-- 添加持仓表单 -->
+            <div id="add-holding-form" class="add-holding-form" style="display:none">
+                <h3>添加持仓</h3>
+                <div class="form-row">
+                    <input type="text" id="hf-code" placeholder="基金代码" maxlength="6">
+                    <span id="hf-name" class="form-hint"></span>
+                </div>
+                <div class="form-row">
+                    <input type="date" id="hf-date">
+                    <input type="number" id="hf-nav" placeholder="买入净值" step="0.0001">
+                    <input type="number" id="hf-amount" placeholder="买入金额(元)" step="0.01">
+                </div>
+                <div class="form-row">
+                    <input type="text" id="hf-notes" placeholder="备注(可选)">
+                </div>
+                <div class="form-actions">
+                    <button id="hf-save" class="btn">保存</button>
+                    <button id="hf-cancel" class="btn btn-ghost">取消</button>
+                </div>
+            </div>
+
+            <!-- 持仓列表 -->
+            <div id="portfolio-list" class="portfolio-list"></div>
+        </section>
     </div>
 
     <!-- 详情弹窗 -->
@@ -63,6 +98,7 @@
                     </div>
                 </div>
                 <div id="detail-stats" class="detail-stats"></div>
+                <div id="detail-advice" class="detail-advice"></div>
             </div>
         </div>
     </div>
