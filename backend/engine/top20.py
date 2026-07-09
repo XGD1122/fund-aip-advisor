@@ -492,29 +492,18 @@ def refresh_daily():
         print(f"[{datetime.now()}] All NAV up to date", flush=True)
         return
 
-    print(f"[{datetime.now()}] {len(stale_codes)} funds need NAV update, 1 threads...", flush=True)
+    print(f"[{datetime.now()}] {len(stale_codes)} funds need NAV update...", flush=True)
     updated_codes = []
-    done = [0]
-    lock = threading.Lock()
 
-    def _fetch_one(code):
+    # V8 引擎单线程，直接顺序拉取（不需要线程池）
+    for i, code in enumerate(stale_codes):
         df = fetch_fund_nav(code)
         if not df.empty:
             df = clean_nav_data(df)
             save_nav_data(df)
-            with lock:
-                updated_codes.append(code)
-        with lock:
-            done[0] += 1
-            if done[0] % 100 == 0:
-                print(f"  {done[0]}/{len(stale_codes)}", flush=True)
-        return True
-
-    # V8 引擎是单线程的，用 1 worker 避免锁竞争
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        futures = [executor.submit(_fetch_one, code) for code in stale_codes]
-        for f in as_completed(futures):
-            pass
+            updated_codes.append(code)
+        if (i + 1) % 200 == 0:
+            print(f"  {i+1}/{len(stale_codes)}", flush=True)
 
     print(f"  NAV updated: {len(updated_codes)}/{len(stale_codes)}", flush=True)
 

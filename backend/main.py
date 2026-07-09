@@ -96,9 +96,9 @@ def api_top20(refresh: bool = False):
 
 @app.get("/api/admin/refresh")
 def api_admin_refresh():
-    """手动触发完整数据刷新"""
-    from engine.top20 import refresh_all_data
-    refresh_all_data()
+    """手动触发每日数据刷新"""
+    from engine.top20 import refresh_daily
+    refresh_daily()
     return {"status": "ok", "message": "数据刷新完成"}
 
 
