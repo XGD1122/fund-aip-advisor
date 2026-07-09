@@ -69,6 +69,15 @@ function render(data) {
 // 详情弹窗
 // ============================================================
 var navChart = null, rsiChart = null, macdChart = null;
+var detailData = null, currentRange = "all";
+
+function filterByRange(data, range) {
+    if (range === "all") return data;
+    var days = { "3y": 756, "1y": 252, "6m": 126, "3m": 63, "1m": 21 };
+    var cutoff = days[range] || 0;
+    if (cutoff === 0 || data.length <= cutoff) return data;
+    return data.slice(-cutoff);
+}
 
 function chartColors() {
     var style = getComputedStyle(document.body);
@@ -99,23 +108,29 @@ async function showDetail(code, name) {
         if (!res.ok) throw new Error("HTTP " + res.status);
         var d = await res.json();
         if (d.error) throw new Error(d.error);
-        renderCharts(d);
+        detailData = d;
+        currentRange = "all";
+        document.querySelectorAll(".rng-btn").forEach(function (b) { b.classList.toggle("active", b.dataset.range === "all"); });
+        renderCharts(d, "all");
         renderStats(d);
     } catch (e) {
         document.getElementById("detail-stats").innerHTML = '<div class="error">加载失败: ' + e.message + '</div>';
     }
 }
 
-function renderCharts(d) {
+function renderCharts(d, range) {
+    range = range || "all";
     var C = chartColors();
+    var signals = filterByRange(d.signals, range);
+    var navHistory = filterByRange(d.nav_history, range);
 
-    // 净值图：用完整净值历史
-    var navDates = d.nav_history.map(function (n) { return n.date; });
-    var navs = d.nav_history.map(function (n) { return n.nav; });
+    // 净值图：用筛选后的净值历史
+    var navDates = navHistory.map(function (n) { return n.date; });
+    var navs = navHistory.map(function (n) { return n.nav; });
 
     // 信号对齐到净值日期
     var sigMap = {};
-    d.signals.forEach(function (s) { sigMap[s.date] = s; });
+    signals.forEach(function (s) { sigMap[s.date] = s; });
     var ma20 = navDates.map(function (dt) { var s = sigMap[dt]; return s ? s.ma20 : null; });
     var ma60 = navDates.map(function (dt) { var s = sigMap[dt]; return s ? s.ma60 : null; });
     var ma120 = navDates.map(function (dt) { var s = sigMap[dt]; return s ? s.ma120 : null; });
@@ -145,12 +160,12 @@ function renderCharts(d) {
         }
     });
 
-    // RSI + MACD 用信号日期
-    var sigDates = d.signals.map(function (s) { return s.date; });
-    var rsis = d.signals.map(function (s) { return s.rsi || null; });
-    var difs = d.signals.map(function (s) { return s.macd_dif || null; });
-    var deas = d.signals.map(function (s) { return s.macd_dea || null; });
-    var hists = d.signals.map(function (s) { return s.macd_hist || null; });
+    // RSI + MACD 用筛选后的信号日期
+    var sigDates = signals.map(function (s) { return s.date; });
+    var rsis = signals.map(function (s) { return s.rsi || null; });
+    var difs = signals.map(function (s) { return s.macd_dif || null; });
+    var deas = signals.map(function (s) { return s.macd_dea || null; });
+    var hists = signals.map(function (s) { return s.macd_hist || null; });
 
     // RSI
     if (rsiChart) rsiChart.destroy();
@@ -245,6 +260,16 @@ function closeDetail() {
     if (rsiChart) { rsiChart.destroy(); rsiChart = null; }
     if (macdChart) { macdChart.destroy(); macdChart = null; }
 }
+
+// 时间范围按钮
+document.querySelectorAll(".rng-btn").forEach(function (btn) {
+    btn.onclick = function () {
+        document.querySelectorAll(".rng-btn").forEach(function (b) { b.classList.remove("active"); });
+        this.classList.add("active");
+        currentRange = this.dataset.range;
+        if (detailData) renderCharts(detailData, currentRange);
+    };
+});
 
 // 按钮
 document.getElementById("refresh-btn").onclick = function () {
