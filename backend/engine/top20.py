@@ -475,17 +475,15 @@ def refresh_all_data():
 
 def refresh_daily():
     """每日轻量刷新：只拉取净值过期的基金，只更新有变化的信号（约 3-10 分钟）"""
-    today = datetime.now()
-    yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-    day_before = (today - timedelta(days=2)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = get_connection()
-    # 只找净值确实过期的基金（宽容 2 天，因为非交易日没有新净值）
+    # 找净值落后昨天的基金（每天收盘后应更新到当日）
     stale = conn.execute("""
         SELECT b.code FROM fund_basic b
         WHERE b.fund_type LIKE ?
-        AND (SELECT MAX(date) FROM fund_nav WHERE code=b.code) <= ?
-    """, (FUND_TYPE_FILTER + "%", day_before)).fetchall()
+        AND (SELECT MAX(date) FROM fund_nav WHERE code=b.code) < ?
+    """, (FUND_TYPE_FILTER + "%", yesterday)).fetchall()
     conn.close()
 
     stale_codes = [r[0] for r in stale]
