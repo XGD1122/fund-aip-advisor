@@ -37,8 +37,9 @@ def startup():
                 need_refresh = True
                 reason = f"信号日期过期(最新: {latest})"
             else:
+                # 只统计A类基金，因为Top20只用A类
                 fund_count = conn.execute(
-                    "SELECT COUNT(*) FROM fund_basic WHERE fund_type LIKE '指数型%'"
+                    "SELECT COUNT(*) FROM fund_basic WHERE fund_type LIKE '指数型%' AND (name LIKE '%A' OR name LIKE '%A类')"
                 ).fetchone()[0]
                 signal_count = conn.execute(
                     "SELECT COUNT(*) FROM fund_signal WHERE date=?", (latest,)
@@ -53,8 +54,8 @@ def startup():
                     return
 
             print(f"[启动检查] {reason}，自动刷新...")
-            from engine.top20 import refresh_all_data
-            refresh_all_data()
+            from engine.top20 import refresh_daily
+            refresh_daily()
             print("[启动检查] 刷新完成")
         except Exception as e:
             print(f"[启动检查] 刷新失败: {e}")

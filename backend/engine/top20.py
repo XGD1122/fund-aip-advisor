@@ -478,10 +478,11 @@ def refresh_daily():
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = get_connection()
-    # 找净值落后昨天的基金（每天收盘后应更新到当日）
+    # 只找净值落后的A类指数基金（Top20只需要A类）
     stale = conn.execute("""
         SELECT b.code FROM fund_basic b
         WHERE b.fund_type LIKE ?
+        AND (b.name LIKE '%A' OR b.name LIKE '%A类')
         AND (SELECT MAX(date) FROM fund_nav WHERE code=b.code) < ?
     """, (FUND_TYPE_FILTER + "%", yesterday)).fetchall()
     conn.close()
@@ -491,7 +492,7 @@ def refresh_daily():
         print(f"[{datetime.now()}] All NAV up to date", flush=True)
         return
 
-    print(f"[{datetime.now()}] {len(stale_codes)} funds need NAV update, 2 threads...", flush=True)
+    print(f"[{datetime.now()}] {len(stale_codes)} funds need NAV update, 1 threads...", flush=True)
     updated_codes = []
     done = [0]
     lock = threading.Lock()
@@ -505,12 +506,12 @@ def refresh_daily():
                 updated_codes.append(code)
         with lock:
             done[0] += 1
-            if done[0] % 200 == 0:
+            if done[0] % 100 == 0:
                 print(f"  {done[0]}/{len(stale_codes)}", flush=True)
         return True
 
-    # 只用 2 线程，降低被限流概率
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # V8 引擎是单线程的，用 1 worker 避免锁竞争
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(_fetch_one, code) for code in stale_codes]
         for f in as_completed(futures):
             pass
@@ -524,10 +525,11 @@ def refresh_daily():
 
 
 def update_signals():
-    """全量更新所有基金的信号（初始化和全量刷新用）"""
+    """全量更新A类基金信号（初始化和全量刷新用）"""
     conn = get_connection()
     codes = [r["code"] for r in conn.execute(
-        "SELECT code FROM fund_basic WHERE fund_type LIKE ?", (FUND_TYPE_FILTER + "%",)
+        "SELECT code FROM fund_basic WHERE fund_type LIKE ? AND (name LIKE '%A' OR name LIKE '%A类')",
+        (FUND_TYPE_FILTER + "%",)
     ).fetchall()]
     conn.close()
     _update_signals_for_codes(codes)
