@@ -21,6 +21,21 @@ FLAT_LINE_THRESHOLD = 0.0001
 PROFITABILITY_1Y_MIN = 0.02
 FREEFALL_60D = 0.30
 FUND_TYPE_FILTER = "指数型"
+MIN_DATA_DAYS = 252          # 最少1年数据
+MIN_VALUATION_DAYS = 504     # 估值分位满分所需最少交易日（2年）
+
+SECTOR_KEYWORDS = {
+    "自由现金流": ["自由现金流", "现金流"],
+    "卫星产业": ["卫星产业", "卫星"],
+    "新能源": ["新能源", "光伏", "锂电", "电池", "风电", "碳中和"],
+    "医药": ["医药", "医疗", "生物医药", "中药", "创新药"],
+    "半导体": ["半导体", "芯片", "集成电路"],
+    "军工": ["军工", "国防", "空天"],
+    "消费": ["消费", "食品饮料", "白酒", "家电"],
+    "红利": ["红利", "高股息"],
+    "金融": ["银行", "金融", "证券", "保险"],
+    "科技": ["科技", "人工智能", "AI", "机器人", "云计算", "大数据"],
+}
 
 
 def compute_top20() -> list:
@@ -46,7 +61,7 @@ def compute_top20() -> list:
 
         rets = returns_data[code]
         n = len(rets)
-        if n < 120:
+        if n < MIN_DATA_DAYS:
             continue
         if _is_flat_line(rets):
             continue
@@ -85,7 +100,7 @@ def compute_top20() -> list:
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:20]
+    return _deduplicate_sector(results)[:20]
 
 
 # ============================================================
@@ -155,6 +170,28 @@ def _is_flat_line(returns: pd.Series) -> bool:
     return float(returns.abs().mean()) < FLAT_LINE_THRESHOLD
 
 
+def _identify_sector(name: str) -> str:
+    """按基金名称识别所属赛道"""
+    for sector, keywords in SECTOR_KEYWORDS.items():
+        for kw in keywords:
+            if kw in name:
+                return sector
+    return "其他"
+
+
+def _deduplicate_sector(results: list, max_per_sector: int = 2) -> list:
+    """同赛道去重：每个赛道最多保留N只，防止抱团霸榜"""
+    seen = {}
+    filtered = []
+    for r in results:
+        sector = _identify_sector(r["name"])
+        seen.setdefault(sector, 0)
+        if seen[sector] < max_per_sector:
+            filtered.append(r)
+            seen[sector] += 1
+    return filtered
+
+
 # ============================================================
 # 大师规则评分引擎
 # ============================================================
@@ -178,6 +215,10 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
     lookback = min(1260, n)  # 最多5年
     nav_pct = calc_nav_percentile(price, lookback)
     v_score = _score_valuation(nav_pct)  # 0-30
+
+    # 数据不足2年的基金，估值分按比例打折（避免新基金虚高）
+    if n < MIN_VALUATION_DAYS:
+        v_score = v_score * (n / float(MIN_VALUATION_DAYS))
 
     # === 2. 均线系统 (25分) ===
     ma_dev = _calc_ma_deviations(price)
