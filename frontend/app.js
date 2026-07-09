@@ -108,26 +108,24 @@ async function showDetail(code, name) {
 
 function renderCharts(d) {
     var C = chartColors();
-    var dates = d.signals.map(function (s) { return s.date; });
-    // 对齐净值日期
-    var navMap = {};
-    d.nav_history.forEach(function (n) { navMap[n.date] = n.nav; });
-    var navs = dates.map(function (dt) { return navMap[dt] || null; });
 
-    var ma20 = d.signals.map(function (s) { return s.ma20 || null; });
-    var ma60 = d.signals.map(function (s) { return s.ma60 || null; });
-    var ma120 = d.signals.map(function (s) { return s.ma120 || null; });
-    var rsis = d.signals.map(function (s) { return s.rsi || null; });
-    var difs = d.signals.map(function (s) { return s.macd_dif || null; });
-    var deas = d.signals.map(function (s) { return s.macd_dea || null; });
-    var hists = d.signals.map(function (s) { return s.macd_hist || null; });
+    // 净值图：用完整净值历史
+    var navDates = d.nav_history.map(function (n) { return n.date; });
+    var navs = d.nav_history.map(function (n) { return n.nav; });
+
+    // 信号对齐到净值日期
+    var sigMap = {};
+    d.signals.forEach(function (s) { sigMap[s.date] = s; });
+    var ma20 = navDates.map(function (dt) { var s = sigMap[dt]; return s ? s.ma20 : null; });
+    var ma60 = navDates.map(function (dt) { var s = sigMap[dt]; return s ? s.ma60 : null; });
+    var ma120 = navDates.map(function (dt) { var s = sigMap[dt]; return s ? s.ma120 : null; });
 
     // 净值+均线
     if (navChart) navChart.destroy();
     navChart = new Chart(document.getElementById("chart-nav"), {
         type: "line",
         data: {
-            labels: dates,
+            labels: navDates,
             datasets: [
                 { label: "净值", data: navs, borderColor: C.nav, borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
                 { label: "MA20", data: ma20, borderColor: C.ma20, borderWidth: 1, pointRadius: 0, borderDash: [4, 2] },
@@ -141,18 +139,25 @@ function renderCharts(d) {
             interaction: { mode: "index", intersect: false },
             plugins: { legend: { position: "top", labels: { boxWidth: 20, padding: 10, font: { size: 11 } } } },
             scales: {
-                x: { display: true, ticks: { maxTicksLimit: 10, font: { size: 10 } }, grid: { color: C.grid } },
+                x: { display: true, ticks: { maxTicksLimit: 12, font: { size: 10 } }, grid: { color: C.grid } },
                 y: { grid: { color: C.grid }, ticks: { font: { size: 10 } } }
             }
         }
     });
+
+    // RSI + MACD 用信号日期
+    var sigDates = d.signals.map(function (s) { return s.date; });
+    var rsis = d.signals.map(function (s) { return s.rsi || null; });
+    var difs = d.signals.map(function (s) { return s.macd_dif || null; });
+    var deas = d.signals.map(function (s) { return s.macd_dea || null; });
+    var hists = d.signals.map(function (s) { return s.macd_hist || null; });
 
     // RSI
     if (rsiChart) rsiChart.destroy();
     rsiChart = new Chart(document.getElementById("chart-rsi"), {
         type: "line",
         data: {
-            labels: dates,
+            labels: sigDates,
             datasets: [{
                 label: "RSI(14)", data: rsis, borderColor: C.rsiLine, borderWidth: 1.5, pointRadius: 0,
                 fill: false
@@ -188,7 +193,7 @@ function renderCharts(d) {
     macdChart = new Chart(document.getElementById("chart-macd"), {
         type: "bar",
         data: {
-            labels: dates,
+            labels: sigDates,
             datasets: [
                 { label: "MACD柱", data: hists, backgroundColor: hists.map(function (v) { return v >= 0 ? C.macdUp : C.macdDn; }), borderWidth: 0 },
                 { label: "DIF", data: difs, borderColor: C.dif, borderWidth: 1, pointRadius: 0, type: "line" },

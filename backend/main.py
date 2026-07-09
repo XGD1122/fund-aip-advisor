@@ -158,7 +158,7 @@ def api_fund_detail(code: str):
         "name": basic["name"],
         "fund_type": basic["fund_type"],
         "nav_history": navs,
-        "signals": signals[-252:] if len(signals) > 252 else signals,  # 最近1年
+        "signals": signals,  # 全部历史
         "latest": {
             "rsi": last_sig.get("rsi", 50),
             "ma5": last_sig.get("ma5", 0),
