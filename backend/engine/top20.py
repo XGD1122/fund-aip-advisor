@@ -97,6 +97,8 @@ def compute_top20() -> list:
             "drawdown": round(s.get("drawdown", 0) * 100, 1),
             "ma_below": s.get("ma_below", 0),
             "warning": s.get("warning", ""),
+            "volatility": s.get("volatility", 0),
+            "bb_position": s.get("bb_position", ""),
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -199,13 +201,14 @@ def _deduplicate_sector(results: list, max_per_sector: int = 4) -> list:
 def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
                   sig: dict, basic: dict) -> dict:
     """
-    基于格雷厄姆-巴菲特体系的五维评分：
+    基于格雷厄姆-巴菲特体系的五维评分（增强版）：
 
-    1. 估值分位 (30分) — Graham: "安全边际"
-    2. 均线系统 (25分) — 金字塔抄底：跌破均线越多越买
+    1. 估值分位 (30分) — 10档专业估值定投体系
+    2. 均线系统 (25分) — 金字塔抄底 + MA60趋势方向
     3. 回撤买入 (20分) — 从高点回撤 = 打折买入
     4. 质量保障 (15分) — 排除价值陷阱
-    5. 技术信号 (10分) — RSI超卖 + MACD底部拐头
+    5. 技术信号 (15分) — RSI + MACD + KDJ + 布林带 多指标共振
+    附加：波动率调整因子
     """
     # 构建价格序列（从收益累积）
     price = (1 + rets).cumprod()
@@ -222,7 +225,8 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
 
     # === 2. 均线系统 (25分) ===
     ma_dev = _calc_ma_deviations(price)
-    ma_score, ma_below = _score_ma_system(ma_dev)  # 0-25
+    ma60_slope = float(sig.get("ma60_slope", 0) or 0)
+    ma_score, ma_below = _score_ma_system(ma_dev, ma60_slope)  # 0-25
 
     # === 3. 回撤买入 (20分) ===
     dd, dd_score = _score_drawdown(price)  # 0-20
@@ -230,14 +234,31 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
     # === 4. 质量保障 (15分) ===
     q_score = _score_quality(basic, rets)  # 0-15
 
-    # === 5. 技术信号 (10分) ===
+    # === 5. 技术信号 (15分) ===
     rsi = sig.get("rsi14", 50) or 50
     dif = sig.get("macd_dif", 0) or 0
     dea = sig.get("macd_dea", 0) or 0
     hist = sig.get("macd_hist", 0) or 0
-    t_score = _score_technical(rsi, dif, dea, hist)  # 0-10
+    kdj_k = sig.get("kdj_k", 50) or 50
+    kdj_d = sig.get("kdj_d", 50) or 50
+    kdj_j = sig.get("kdj_j", 50) or 50
+    bb_upper = sig.get("bb_upper", 0) or 0
+    bb_mid = sig.get("bb_mid", 0) or 0
+    bb_lower = sig.get("bb_lower", 0) or 0
+    bb_width_val = sig.get("bb_width", 0) or 0
+
+    # 布林带位置评估
+    bb_score = _score_bollinger(price, bb_upper, bb_mid, bb_lower, bb_width_val)
+    t_score = _score_technical(rsi, dif, dea, hist, kdj_k, kdj_d, kdj_j, bb_score)  # 0-15
 
     score = v_score + ma_score + dd_score + q_score + t_score
+
+    # === 波动率调整因子 ===
+    annual_vol = float(rets.std() * np.sqrt(252)) if len(rets) >= 60 else 0
+    if annual_vol > 0.40:
+        score *= 0.80   # 高波动基金，风险打折
+    elif annual_vol > 0.25:
+        score *= 0.90   # 中等波动
 
     # 崩盘惩罚：60日跌幅 > 30%
     if r60 < -FREEFALL_60D:
@@ -249,6 +270,10 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
         warning = "追高风险: 近1年涨幅过大"
     elif nav_pct <= 0.2 and ma_below >= 2:
         warning = "低估值+均线支撑"
+    elif kdj_j < 0:
+        warning = "KDJ极度超卖"
+    elif bb_width_val > 0 and bb_width_val < 0.02:
+        warning = "布林带极窄，变盘在即"
 
     # 连续下跌天数
     raw = rets.values
@@ -266,29 +291,38 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
         "drawdown": dd,
         "ma_below": ma_below,
         "warning": warning,
+        "volatility": round(annual_vol * 100, 1),
+        "bb_position": "下轨" if bb_lower > 0 and float(price.iloc[-1]) <= bb_lower * 1.02 else
+                       "下轨附近" if bb_lower > 0 and float(price.iloc[-1]) <= bb_lower * 1.05 else
+                       "中轨下方" if bb_mid > 0 and float(price.iloc[-1]) < bb_mid else
+                       "中轨上方" if bb_mid > 0 else "",
     }
 
 
 # === 1. 估值分位 (0-30) ===
 
 def _score_valuation(nav_pct: float) -> float:
-    """格雷厄姆估值分位评分 — 越低越安全"""
-    if nav_pct <= 0.10:
-        return 30.0   # 极度低估（近5年最低10%）
+    """格雷厄姆估值分位评分 — 10档专业估值定投体系"""
+    if nav_pct <= 0.05:
+        return 30.0   # 五年一遇，重仓机会
+    elif nav_pct <= 0.10:
+        return 28.0   # 极度低估，2倍定投区
     elif nav_pct <= 0.20:
-        return 27.0   # 明显低估
+        return 25.0   # 明显低估，1.5倍定投区
     elif nav_pct <= 0.30:
-        return 23.0   # 低估
+        return 21.0   # 低估，正常加仓
     elif nav_pct <= 0.40:
-        return 18.0   # 偏低
+        return 16.0   # 偏低，可少量买入
     elif nav_pct <= 0.50:
-        return 13.0   # 合理偏低
+        return 11.0   # 合理偏低，观望
     elif nav_pct <= 0.60:
-        return 8.0    # 合理
+        return 6.0    # 合理，暂不加仓
     elif nav_pct <= 0.70:
-        return 4.0    # 偏高
+        return 3.0    # 偏高，不建议买入
+    elif nav_pct <= 0.80:
+        return 1.0    # 高估，等待回调
     else:
-        return 1.0    # 高估
+        return 0.0    # 极度高估，不买
 
 
 # === 2. 均线系统 (0-25) ===
@@ -306,10 +340,11 @@ def _calc_ma_deviations(price: pd.Series) -> dict:
     return result
 
 
-def _score_ma_system(ma_dev: dict) -> tuple:
+def _score_ma_system(ma_dev: dict, ma60_slope: float = 0) -> tuple:
     """
     均线金字塔评分 (0-25)
     格雷厄姆式阶梯：跌破均线越多 → 打折越深 → 加分越多
+    新增：MA60趋势方向加成
     """
     score = 0.0
     below = 0
@@ -341,10 +376,38 @@ def _score_ma_system(ma_dev: dict) -> tuple:
     else:
         score += 2.0
 
-    # 双重验证加成：估值低 + 均线下方
-    # (估值分位在主函数判断，这里只加均线分)
+    # MA60趋势方向加成 (0~2分)
+    if ma60_slope > 0.02:
+        score += 2.0    # 均线向上，趋势健康
+        below = max(0, below - 1)  # 趋势向上时降低破位严重度
+    elif ma60_slope > 0:
+        score += 1.0    # 均线走平
 
     return score, below
+
+
+# === 2.5 布林带位置 (整合进技术分前独立计算) ===
+
+def _score_bollinger(price: pd.Series, bb_upper: float, bb_mid: float, bb_lower: float,
+                     bb_width_val: float = 0) -> float:
+    """布林带位置评分 (0-5)，整合入技术分"""
+    current = float(price.iloc[-1])
+    score = 0.0
+
+    if bb_lower > 0 and current <= bb_lower * 1.02:
+        score += 3.0   # 触及/跌破下轨 → 超卖反弹机会
+    elif bb_lower > 0 and current <= bb_lower * 1.05:
+        score += 2.0   # 接近下轨
+    elif bb_mid > 0 and current < bb_mid:
+        score += 1.0   # 中轨下方，偏弱
+    elif bb_mid > 0 and current > bb_mid:
+        score += 2.0   # 突破中轨，趋势转强
+
+    # 带宽收缩加成（预示变盘）
+    if bb_width_val > 0 and bb_width_val < 0.03:
+        score += 1.0   # 带宽极窄，即将变盘
+
+    return min(5.0, score)
 
 
 # === 3. 回撤买入 (0-20) ===
@@ -434,11 +497,13 @@ def _score_quality(basic: dict, returns: pd.Series) -> float:
 
 # === 5. 技术信号 (0-10) ===
 
-def _score_technical(rsi: float, dif: float, dea: float, hist: float) -> float:
-    """底部技术信号：RSI超卖 + MACD拐头"""
+def _score_technical(rsi: float, dif: float, dea: float, hist: float,
+                     kdj_k: float = 50, kdj_d: float = 50, kdj_j: float = 50,
+                     bb_score: float = 0) -> float:
+    """底部技术信号 (0-15)：RSI超卖 + MACD拐头 + KDJ + 布林带"""
     score = 0.0
 
-    # RSI (6分)
+    # RSI (6分) — 保持原有逻辑
     if 30 <= rsi <= 40:
         score += 6.0   # 超卖黄金区
     elif 40 < rsi <= 45:
@@ -452,7 +517,7 @@ def _score_technical(rsi: float, dif: float, dea: float, hist: float) -> float:
     else:
         score += 0.5
 
-    # MACD底部拐头 (4分)
+    # MACD (4分) — 保持原有逻辑
     if dif > dea:
         score += 2.0   # 金叉
         if hist > 0:
@@ -460,7 +525,21 @@ def _score_technical(rsi: float, dif: float, dea: float, hist: float) -> float:
     elif dif < dea and dif > dea * 1.05:  # 接近金叉
         score += 1.0
 
-    return score
+    # KDJ (3分) — 新增
+    if kdj_j < 0:
+        score += 2.0   # J值<0，极度超卖
+    elif kdj_j < 20:
+        score += 1.5   # 深度超卖
+    if kdj_k > kdj_d and kdj_k < 30:
+        score += 1.0   # 低位金叉
+
+    # 布林带位置 (2分) — 从bb_score映射
+    if bb_score >= 3:
+        score += 2.0
+    elif bb_score >= 2:
+        score += 1.0
+
+    return min(15.0, score)
 
 
 # ============================================================
@@ -577,8 +656,9 @@ def _update_signals_for_codes(codes: list):
         try:
             conn.execute("""
                 INSERT OR REPLACE INTO fund_signal
-                (code, date, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14, bb_upper, bb_mid, bb_lower)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (code, date, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14,
+                 bb_upper, bb_mid, bb_lower, kdj_k, kdj_d, kdj_j, bb_width, atr14, ma60_slope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 code, str(last["date"]),
                 float(last.get("ma5", 0) or 0), float(last.get("ma20", 0) or 0),
@@ -587,9 +667,13 @@ def _update_signals_for_codes(codes: list):
                 float(last.get("macd_hist", 0) or 0), float(last.get("rsi14", 50) or 50),
                 float(last.get("bb_upper", 0) or 0), float(last.get("bb_mid", 0) or 0),
                 float(last.get("bb_lower", 0) or 0),
+                float(last.get("kdj_k", 50) or 50), float(last.get("kdj_d", 50) or 50),
+                float(last.get("kdj_j", 50) or 50),
+                float(last.get("bb_width", 0) or 0), float(last.get("atr14", 0) or 0),
+                float(last.get("ma60_slope", 0) or 0),
             ))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  signal insert error [{code}]: {e}")
         conn.commit()
         conn.close()
         if (i + 1) % 500 == 0:
@@ -598,7 +682,10 @@ def _update_signals_for_codes(codes: list):
 
 
 def _calc_signals_for_fund(code: str) -> pd.DataFrame:
-    from engine.indicators import calc_ma, calc_macd, calc_rsi, calc_bollinger
+    from engine.indicators import (
+        calc_ma, calc_macd, calc_rsi, calc_bollinger,
+        calc_kdj, calc_atr, calc_bb_width,
+    )
 
     conn = get_connection()
     rows = conn.execute(
@@ -631,5 +718,19 @@ def _calc_signals_for_fund(code: str) -> pd.DataFrame:
     df["bb_upper"] = bb["bb_upper"]
     df["bb_mid"] = bb["bb_mid"]
     df["bb_lower"] = bb["bb_lower"]
+
+    # 新增指标
+    kdj = calc_kdj(nav, 9, 3, 3)
+    df["kdj_k"] = kdj["kdj_k"]
+    df["kdj_d"] = kdj["kdj_d"]
+    df["kdj_j"] = kdj["kdj_j"]
+
+    df["atr14"] = calc_atr(nav, 14)
+    df["bb_width"] = calc_bb_width(nav, 20)
+
+    # MA60 斜率（近20日变化率）
+    ma60_s = calc_ma(nav, 60)
+    df["ma60_slope"] = ma60_s.diff(20) / ma60_s.shift(20).replace(0, np.nan)
+    df["ma60_slope"] = df["ma60_slope"].fillna(0)
 
     return df

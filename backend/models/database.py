@@ -112,6 +112,17 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_snapshot (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            total_value REAL,
+            total_invested REAL,
+            holdings_json TEXT,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+
     cur.execute("CREATE INDEX IF NOT EXISTS idx_nav_code_date ON fund_nav(code, date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_score_date ON fund_score(calc_date, mode)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_code_date ON fund_signal(code, date)")
@@ -128,6 +139,13 @@ def _migrate_columns(cur):
     migrations = [
         ("fund_score", "tracking_score", "REAL DEFAULT 50"),
         ("fund_score", "tracking_error", "REAL DEFAULT 0"),
+        # 新增技术指标字段
+        ("fund_signal", "kdj_k", "REAL"),
+        ("fund_signal", "kdj_d", "REAL"),
+        ("fund_signal", "kdj_j", "REAL"),
+        ("fund_signal", "bb_width", "REAL"),
+        ("fund_signal", "atr14", "REAL"),
+        ("fund_signal", "ma60_slope", "REAL"),
     ]
     for table, column, col_def in migrations:
         try:

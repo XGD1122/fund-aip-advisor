@@ -64,6 +64,27 @@ def startup():
 
     threading.Thread(target=_auto_refresh_if_stale, daemon=True).start()
 
+    # 每日定时刷新：每小时检查一次，发现数据过期自动刷新
+    def _daily_scheduler():
+        import time as _time
+        while True:
+            _time.sleep(3600)  # 每小时检查一次
+            try:
+                conn = get_connection()
+                row = conn.execute("SELECT MAX(date) FROM fund_signal").fetchone()
+                conn.close()
+                latest = row[0] if row and row[0] else None
+                yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                if latest is None or latest < yesterday:
+                    print(f"[定时刷新] 数据过期(最新: {latest})，开始刷新...")
+                    from engine.top20 import refresh_daily
+                    refresh_daily()
+                    print("[定时刷新] 完成")
+            except Exception as e:
+                print(f"[定时刷新] 失败: {e}")
+
+    threading.Thread(target=_daily_scheduler, daemon=True).start()
+
 
 @app.get("/api/top20")
 def api_top20(refresh: bool = False):
@@ -143,7 +164,9 @@ def api_fund_detail(code: str):
     ).fetchall()
 
     signal_rows = conn.execute(
-        "SELECT date, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14 FROM fund_signal WHERE code=? ORDER BY date",
+        "SELECT date, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14, "
+        "kdj_k, kdj_d, kdj_j, bb_upper, bb_mid, bb_lower, bb_width, atr14, ma60_slope "
+        "FROM fund_signal WHERE code=? ORDER BY date",
         (code,)
     ).fetchall()
     conn.close()
@@ -157,7 +180,14 @@ def api_fund_detail(code: str):
                 "macd_dif": round(float(r["macd_dif"] or 0), 4),
                 "macd_dea": round(float(r["macd_dea"] or 0), 4),
                 "macd_hist": round(float(r["macd_hist"] or 0), 4),
-                "rsi": round(float(r["rsi14"] or 50), 1)}
+                "rsi": round(float(r["rsi14"] or 50), 1),
+                "kdj_k": round(float(r["kdj_k"] or 50), 1),
+                "kdj_d": round(float(r["kdj_d"] or 50), 1),
+                "kdj_j": round(float(r["kdj_j"] or 50), 1),
+                "bb_upper": round(float(r["bb_upper"] or 0), 4),
+                "bb_mid": round(float(r["bb_mid"] or 0), 4),
+                "bb_lower": round(float(r["bb_lower"] or 0), 4),
+                "bb_width": round(float(r["bb_width"] or 0) * 100, 2)}
                for r in signal_rows]
 
     # 计算近几期收益
@@ -193,6 +223,13 @@ def api_fund_detail(code: str):
             "macd_dif": last_sig.get("macd_dif", 0),
             "macd_dea": last_sig.get("macd_dea", 0),
             "nav": navs[-1]["nav"] if navs else 0,
+            "kdj_k": last_sig.get("kdj_k", 50),
+            "kdj_d": last_sig.get("kdj_d", 50),
+            "kdj_j": last_sig.get("kdj_j", 50),
+            "bb_upper": last_sig.get("bb_upper", 0),
+            "bb_mid": last_sig.get("bb_mid", 0),
+            "bb_lower": last_sig.get("bb_lower", 0),
+            "bb_width": last_sig.get("bb_width", 0),
         },
         "returns": rets,
         "record_count": len(navs),
@@ -301,6 +338,99 @@ def api_fund_advice(code: str):
 
     sell = get_sell_signals(code)
     return {"buy": buy, "sell": sell}
+
+
+@app.get("/api/portfolio/risk")
+def api_portfolio_risk():
+    """组合风险分析（详细版）"""
+    from engine.advisor import analyze_portfolio
+    return analyze_portfolio()
+
+
+@app.get("/api/fund/{code}/technicals")
+def api_fund_technicals(code: str):
+    """技术指标仪表盘：RSI/MACD/KDJ/布林带/均线 一览"""
+    conn = get_connection()
+    basic = conn.execute(
+        "SELECT name, fund_type FROM fund_basic WHERE code=?", (code,)
+    ).fetchone()
+    sig_row = conn.execute(
+        "SELECT * FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1", (code,)
+    ).fetchone()
+    # 获取前一日信号用于对比
+    sig_prev = conn.execute(
+        "SELECT * FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1 OFFSET 1", (code,)
+    ).fetchone()
+    conn.close()
+
+    if not basic:
+        return {"error": "基金不存在"}
+    if not sig_row:
+        return {"error": "暂无技术指标数据"}
+
+    def _safe_float(val, default=0):
+        return round(float(val or default), 4)
+
+    def _trend(curr, prev, key):
+        """判断指标方向"""
+        c = float(curr.get(key, 0) or 0)
+        if prev is None:
+            return "flat"
+        p = float(prev.get(key, 0) or 0)
+        if p == 0:
+            return "flat"
+        if c > p * 1.02:
+            return "up"
+        elif c < p * 0.98:
+            return "down"
+        return "flat"
+
+    current = dict(sig_row)
+    prev_dict = dict(sig_prev) if sig_prev else None
+    rsi = float(current.get("rsi14", 50) or 50)
+    dif = _safe_float(current.get("macd_dif"))
+    dea = _safe_float(current.get("macd_dea"))
+    hist = _safe_float(current.get("macd_hist"))
+    kdj_k = float(current.get("kdj_k", 50) or 50)
+    kdj_d = float(current.get("kdj_d", 50) or 50)
+    kdj_j = float(current.get("kdj_j", 50) or 50)
+
+    return {
+        "code": code,
+        "name": basic["name"],
+        "technicals": {
+            "rsi": {
+                "value": round(rsi, 1),
+                "zone": "超买" if rsi > 70 else "超卖" if rsi < 30 else "中性",
+                "trend": _trend(current, prev_dict, "rsi14"),
+            },
+            "macd": {
+                "dif": dif, "dea": dea, "hist": hist,
+                "signal": "金叉" if dif > dea else "死叉",
+                "hist_direction": "up" if hist > 0 else "down",
+                "trend": _trend(current, prev_dict, "macd_dif"),
+            },
+            "kdj": {
+                "k": round(kdj_k, 1), "d": round(kdj_d, 1), "j": round(kdj_j, 1),
+                "zone": "超买" if kdj_j > 100 else "超卖" if kdj_j < 0 else "中性",
+                "signal": "金叉" if kdj_k > kdj_d else "死叉",
+            },
+            "bollinger": {
+                "upper": _safe_float(current.get("bb_upper")),
+                "mid": _safe_float(current.get("bb_mid")),
+                "lower": _safe_float(current.get("bb_lower")),
+                "width": round(float(current.get("bb_width", 0) or 0) * 100, 2),
+            },
+            "ma": {
+                "ma5": _safe_float(current.get("ma5")),
+                "ma20": _safe_float(current.get("ma20")),
+                "ma60": _safe_float(current.get("ma60")),
+                "ma120": _safe_float(current.get("ma120")),
+                "ma60_slope": round(float(current.get("ma60_slope", 0) or 0) * 100, 2),
+            },
+            "atr14": _safe_float(current.get("atr14")),
+        }
+    }
 
 
 @app.get("/api/health")

@@ -200,6 +200,143 @@ def calc_ma_deviation_multi(nav: pd.Series) -> dict:
     return result
 
 
+# === KDJ 指标 ===
+
+def calc_kdj(close: pd.Series, n: int = 9, m1: int = 3, m2: int = 3) -> dict:
+    """
+    KDJ随机指标（用滚动窗口高低点近似，适配基金净值数据）
+    标准公式: RSV = (C - Ln) / (Hn - Ln) * 100
+    """
+    low_n = close.rolling(window=n, min_periods=1).min()
+    high_n = close.rolling(window=n, min_periods=1).max()
+    rsv = (close - low_n) / (high_n - low_n).replace(0, np.nan) * 100
+    rsv = rsv.fillna(50)
+
+    k = rsv.ewm(span=m1, adjust=False).mean()
+    d = k.ewm(span=m2, adjust=False).mean()
+    j = 3 * k - 2 * d
+
+    # 限制在0-100
+    k = k.clip(0, 100)
+    d = d.clip(0, 100)
+    j = j.clip(0, 100)
+
+    return {"kdj_k": k, "kdj_d": d, "kdj_j": j}
+
+
+# === ATR 平均真实波幅 ===
+
+def calc_atr(close: pd.Series, window: int = 14) -> pd.Series:
+    """
+    用日收益率反推隐含波动幅度来近似ATR（适配基金净值数据）
+    TR ≈ |daily_return| * close（近似真实波动）
+    """
+    daily_pct = close.pct_change().abs()
+    # 使用EWMA平滑
+    atr = daily_pct * close
+    atr = atr.ewm(span=window, adjust=False).mean()
+    return atr
+
+
+# === 布林带宽度 ===
+
+def calc_bb_width(close: pd.Series, window: int = 20, num_std: float = 2.0) -> pd.Series:
+    """布林带宽度 = (上轨-下轨) / 中轨"""
+    mid = calc_ma(close, window)
+    std = close.rolling(window=window, min_periods=1).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    width = (upper - lower) / mid.replace(0, np.nan)
+    return width.fillna(0)
+
+
+# === 背离检测 ===
+
+def detect_macd_divergence(close: pd.Series, dif: pd.Series, lookback: int = 60) -> dict:
+    """
+    检测MACD顶背离/底背离
+    顶背离: 价格创新高，MACD DIF未创新高 → 上涨动能衰竭
+    底背离: 价格创新低，MACD DIF未创新低 → 下跌动能衰竭
+    返回: {"type": "bearish"/"bullish"/None, "strength": 0-1}
+    """
+    if len(close) < lookback:
+        return {"type": None, "strength": 0}
+
+    recent_close = close.tail(lookback)
+    recent_dif = dif.tail(lookback)
+
+    # 找近期的局部极值点（简化：用区间最高/最低点）
+    close_max_idx = recent_close.idxmax()
+    close_min_idx = recent_close.idxmin()
+
+    # 顶背离检测
+    close_peak = recent_close.max()
+    dif_at_close_peak = recent_dif.loc[close_max_idx] if close_max_idx in recent_dif.index else 0
+    dif_peak = recent_dif.max()
+
+    bearish = False
+    if dif_at_close_peak < dif_peak * 0.95:  # DIF在价格高点时未同步创新高
+        bearish = True
+
+    # 底背离检测
+    close_trough = recent_close.min()
+    dif_at_close_trough = recent_dif.loc[close_min_idx] if close_min_idx in recent_dif.index else 0
+    dif_trough = recent_dif.min()
+
+    bullish = False
+    if dif_at_close_trough > dif_trough * 1.05:  # DIF在价格低点时未同步创新低
+        bullish = True
+
+    if bearish:
+        strength = min(1.0, (dif_peak - dif_at_close_peak) / abs(dif_peak) * 5 if dif_peak != 0 else 0)
+        return {"type": "bearish", "strength": round(strength, 2)}
+    elif bullish:
+        strength = min(1.0, (dif_at_close_trough - dif_trough) / abs(dif_trough) * 5 if dif_trough != 0 else 0)
+        return {"type": "bullish", "strength": round(strength, 2)}
+
+    return {"type": None, "strength": 0}
+
+
+def detect_rsi_divergence(close: pd.Series, rsi: pd.Series, lookback: int = 60) -> dict:
+    """
+    检测RSI顶背离/底背离
+    顶背离: 价格创新高，RSI未创新高
+    底背离: 价格创新低，RSI未创新低
+    """
+    if len(close) < lookback:
+        return {"type": None, "strength": 0}
+
+    recent_close = close.tail(lookback)
+    recent_rsi = rsi.tail(lookback)
+
+    close_max_idx = recent_close.idxmax()
+    close_min_idx = recent_close.idxmin()
+
+    # 顶背离
+    close_peak = recent_close.max()
+    rsi_at_close_peak = recent_rsi.loc[close_max_idx] if close_max_idx in recent_rsi.index else 50
+    rsi_peak = recent_rsi.max()
+
+    bearish = rsi_at_close_peak < rsi_peak - 5  # RSI差5点以上算背离
+
+    # 底背离
+    rsi_at_close_trough = recent_rsi.loc[close_min_idx] if close_min_idx in recent_rsi.index else 50
+    rsi_trough = recent_rsi.min()
+
+    bullish = rsi_at_close_trough > rsi_trough + 5
+
+    if bearish:
+        strength = min(1.0, (rsi_peak - rsi_at_close_peak) / 20)
+        return {"type": "bearish", "strength": round(strength, 2)}
+    elif bullish:
+        strength = min(1.0, (rsi_at_close_trough - rsi_trough) / 20)
+        return {"type": "bullish", "strength": round(strength, 2)}
+
+    return {"type": None, "strength": 0}
+
+
+# === 全信号计算（更新版，包含新指标） ===
+
 def calc_all_signals_for_fund(code: str) -> pd.DataFrame:
     """计算一只基金的全部技术信号并保存"""
     conn = get_connection()
@@ -234,5 +371,19 @@ def calc_all_signals_for_fund(code: str) -> pd.DataFrame:
     df["bb_upper"] = bb["bb_upper"]
     df["bb_mid"] = bb["bb_mid"]
     df["bb_lower"] = bb["bb_lower"]
+
+    # 新增指标
+    kdj = calc_kdj(nav, 9, 3, 3)
+    df["kdj_k"] = kdj["kdj_k"]
+    df["kdj_d"] = kdj["kdj_d"]
+    df["kdj_j"] = kdj["kdj_j"]
+
+    df["atr14"] = calc_atr(nav, 14)
+    df["bb_width"] = calc_bb_width(nav, 20)
+
+    # MA60 斜率（近20日）
+    ma60_series = calc_ma(nav, 60)
+    df["ma60_slope"] = ma60_series.diff(20) / ma60_series.shift(20).replace(0, np.nan)
+    df["ma60_slope"] = df["ma60_slope"].fillna(0)
 
     return df

@@ -58,11 +58,27 @@ function render(data) {
         h += '<td class="' + clr(-r.drawdown) + '">' + fmt(-Math.abs(r.drawdown)) + '</td>';
         h += '<td>' + maLabel(r.ma_below) + '</td>';
         h += '<td>' + r.rsi + '</td>';
+        h += '<td>' + volLabel(r.volatility) + '</td>';
+        h += '<td>' + bbLabel(r.bb_position) + '</td>';
         h += '<td>' + r.consecutive_down + '天</td>';
         h += '<td>' + warnLabel(r.warning) + '</td>';
         h += '</tr>';
     });
     document.getElementById("tbody").innerHTML = h;
+}
+
+function volLabel(v) {
+    if (!v) return '<span class="tag">-</span>';
+    if (v > 40) return '<span class="tag r">高(' + v + '%)</span>';
+    if (v > 25) return '<span class="tag o">中(' + v + '%)</span>';
+    return '<span class="tag g">低(' + v + '%)</span>';
+}
+
+function bbLabel(pos) {
+    if (!pos) return '<span class="tag">-</span>';
+    if (pos.indexOf("下轨") >= 0) return '<span class="tag g">' + pos + '</span>';
+    if (pos.indexOf("中轨下方") >= 0) return '<span class="tag y">' + pos + '</span>';
+    return '<span class="tag">' + pos + '</span>';
 }
 
 // ============================================================
@@ -113,6 +129,7 @@ async function showDetail(code, name) {
         document.querySelectorAll(".rng-btn").forEach(function (b) { b.classList.toggle("active", b.dataset.range === "all"); });
         renderCharts(d, "all");
         renderStats(d);
+        renderTechnicals(code);
     } catch (e) {
         document.getElementById("detail-stats").innerHTML = '<div class="error">加载失败: ' + e.message + '</div>';
     }
@@ -248,6 +265,38 @@ function renderStats(d) {
     document.getElementById("detail-stats").innerHTML = h;
 }
 
+function renderTechnicals(code) {
+    var el = document.getElementById("detail-technicals");
+    el.innerHTML = '<div class="loading">加载技术指标...</div>';
+    fetch(API + "/fund/" + code + "/technicals")
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (d.error) { el.innerHTML = ''; return; }
+            var t = d.technicals;
+            var h = '<h3>技术指标仪表盘</h3>';
+            h += '<div class="tech-grid">';
+            // RSI
+            h += '<div class="tech-item"><span class="tlbl">RSI(14)</span><span class="tval ' + (t.rsi.zone === '超买' ? 'up' : t.rsi.zone === '超卖' ? 'down' : '') + '">' + t.rsi.value + '</span><span class="tz">' + t.rsi.zone + '</span></div>';
+            // MACD
+            h += '<div class="tech-item"><span class="tlbl">MACD</span><span class="tval">' + (t.macd.signal === '金叉' ? '<span class="up">金叉</span>' : '<span class="down">死叉</span>') + '</span><span class="tz">DIF:' + t.macd.dif + '</span></div>';
+            // KDJ
+            h += '<div class="tech-item"><span class="tlbl">KDJ</span><span class="tval">K:' + t.kdj.k + ' D:' + t.kdj.d + '</span><span class="tz">J:' + t.kdj.j + ' ' + t.kdj.signal + '</span></div>';
+            // Bollinger
+            var bbPos = '';
+            var bbCls = '';
+            if (t.bollinger.lower > 0) {
+                bbPos = '上:' + t.bollinger.upper + ' 下:' + t.bollinger.lower;
+            }
+            h += '<div class="tech-item"><span class="tlbl">布林带</span><span class="tval">宽度:' + t.bollinger.width + '%</span><span class="tz">' + bbPos + '</span></div>';
+            // MA
+            h += '<div class="tech-item"><span class="tlbl">均线</span><span class="tval">MA20:' + t.ma.ma20 + '</span><span class="tz">MA60:' + t.ma.ma60 + ' MA120:' + t.ma.ma120 + '</span></div>';
+            // ATR
+            h += '<div class="tech-item"><span class="tlbl">ATR(14)</span><span class="tval">' + t.atr14 + '</span><span class="tz">日均波幅</span></div>';
+            h += '</div>';
+            el.innerHTML = h;
+        }).catch(function () { el.innerHTML = ''; });
+}
+
 // 弹窗控制
 document.getElementById("modal-close").onclick = closeDetail;
 document.getElementById("modal-overlay").onclick = function (e) {
@@ -287,41 +336,74 @@ function renderAdvice(d) {
         .then(function (r) { return r.json(); })
         .then(function (adv) {
             if (adv.buy && adv.sell) {
-                var h = '<h3>买卖建议</h3>';
-                // 买入建议
+                var h = '<h3>交易建议</h3>';
+
+                // === 买入建议 ===
                 var b = adv.buy;
                 h += '<div class="advice-card">';
-                h += '<div class="advice-title">买入建议：' + b.buy_urgency + '</div>';
+                h += '<div class="advice-title">买入建议：<span class="' + (b.dca_multiplier >= 1 ? 'up' : '') + '">' + b.buy_urgency + '</span></div>';
                 h += '<div class="advice-body">';
-                h += '<p>估值状态：<b>' + b.valuation.label + '</b>（分位 ' + b.valuation.pct + '%）</p>';
-                h += '<p>建议仓位：<b>' + b.suggested_position + '</b></p>';
+                h += '<p>估值状态：<b>' + b.valuation.label + '</b>（历史分位 ' + b.valuation.pct + '%）</p>';
+                h += '<p>定投倍数：<b>' + b.dca_multiplier + 'x</b> | 建议仓位：<b>' + b.suggested_position + '</b></p>';
                 h += '<p>入场计划：' + b.batch_plan + '</p>';
                 if (b.entry_points && b.entry_points.length > 0) {
                     h += '<p>参考价位：';
                     b.entry_points.forEach(function (ep) {
-                        h += '<span class="tag">' + ep.level + ' ' + ep.price + '（' + ep.label + '）</span> ';
+                        h += '<span class="tag y">' + ep.level + ': ' + ep.price + '</span> ';
                     });
                     h += '</p>';
                 }
+                if (b.grid_params) {
+                    h += '<p>网格参数：间距<b>' + b.grid_params.spacing + '%</b> | ' + b.grid_params.suggested_grids + '格 | 区间[' + b.grid_params.lower + ' ~ ' + b.grid_params.upper + ']</p>';
+                }
                 if (b.risk_warnings && b.risk_warnings.length > 0) {
-                    h += '<p class="risk">⚠ ';
-                    b.risk_warnings.forEach(function (w) { h += w + '<br>'; });
-                    h += '</p>';
+                    h += '<div class="risk">';
+                    b.risk_warnings.forEach(function (w) { h += '<p>' + w + '</p>'; });
+                    h += '</div>';
                 }
                 h += '</div></div>';
 
-                // 卖出信号
+                // === 卖出信号 ===
                 var s = adv.sell;
+                var scls = s.sell_score >= 60 ? 'r' : s.sell_score >= 40 ? 'o' : s.sell_score >= 20 ? 'y' : 'g';
                 h += '<div class="advice-card">';
-                h += '<div class="advice-title">卖出信号：' + s.summary + '</div>';
+                h += '<div class="advice-title">卖出信号：<span class="tag ' + scls + '">' + s.summary + '</span> <small>(紧迫度: ' + (s.sell_score || 0) + '/100)</small></div>';
                 h += '<div class="advice-body">';
                 if (s.profit_pct !== null && s.profit_pct !== undefined) {
-                    h += '<p>持仓盈亏：<b class="' + (s.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(s.profit_pct) + '</b></p>';
+                    h += '<p>持仓盈亏：<b class="' + (s.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(s.profit_pct) + '</b>';
+                    if (s.holding_days) h += ' | 持有' + s.holding_days + '天';
+                    h += '</p>';
                 }
-                h += '<p>当前净值：' + s.current_nav + ' | RSI：' + s.rsi + '</p>';
-                s.signals.forEach(function (sig) {
-                    h += '<p>' + sig.icon + ' <b>' + sig.type + '</b>：' + sig.msg + '</p>';
-                });
+                h += '<p>净值：' + s.current_nav + ' | RSI：' + s.rsi + ' | 估值分位：' + s.nav_pct + '%</p>';
+
+                // 信号列表
+                if (s.signals && s.signals.length > 0) {
+                    h += '<div class="signal-list">';
+                    s.signals.forEach(function (sig) {
+                        var lvl = sig.level >= 3 ? 'r' : sig.level >= 2 ? 'o' : sig.level >= 1 ? 'y' : '';
+                        h += '<div class="signal-item ' + lvl + '"><b>' + sig.type + '</b>：' + sig.msg + '</div>';
+                    });
+                    h += '</div>';
+                }
+
+                // 操作计划
+                if (s.action_plan) {
+                    h += '<div class="action-plan">';
+                    if (s.action_plan.urgent_actions && s.action_plan.urgent_actions.length > 0) {
+                        h += '<div class="ap-title">立即操作：</div>';
+                        s.action_plan.urgent_actions.forEach(function (a) {
+                            h += '<div class="ap-item"><span class="tag r">' + a.action + '</span> ' + a.reason + '</div>';
+                        });
+                    }
+                    if (s.action_plan.monitor_items && s.action_plan.monitor_items.length > 0) {
+                        h += '<div class="ap-title">持续监控：</div>';
+                        s.action_plan.monitor_items.forEach(function (m) {
+                            h += '<div class="ap-item"><span class="tag y">监控</span> ' + m + '</div>';
+                        });
+                    }
+                    h += '<div class="ap-next">下次复查：' + (s.action_plan.next_review_date || '-') + '</div>';
+                    h += '</div>';
+                }
                 h += '</div></div>';
                 container.innerHTML = h;
             } else {
@@ -362,6 +444,7 @@ function renderPortfolioSummary(data) {
     var el = document.getElementById("portfolio-summary");
     if (data.status === "empty") {
         el.innerHTML = '<div class="empty-hint">暂无持仓，点击「＋ 添加持仓」开始管理</div>';
+        document.getElementById("portfolio-risk").style.display = "none";
         return;
     }
     var h = '<div class="summary-cards">';
@@ -370,6 +453,11 @@ function renderPortfolioSummary(data) {
     var pcls = data.total_profit >= 0 ? "up" : "down";
     h += '<div class="scard"><span class="slbl">总盈亏</span><span class="sval ' + pcls + '">' + fmt(data.total_profit_pct) + ' (¥' + Math.round(data.total_profit).toLocaleString() + ')</span></div>';
     h += '<div class="scard"><span class="slbl">持仓数</span><span class="sval">' + data.holdings_count + '只</span></div>';
+
+    // 风险指标
+    if (data.risk_metrics && data.risk_metrics.portfolio_volatility) {
+        h += '<div class="scard"><span class="slbl">组合波动率</span><span class="sval">' + data.risk_metrics.portfolio_volatility + '%</span></div>';
+    }
     h += '</div>';
 
     // 赛道分布
@@ -377,7 +465,8 @@ function renderPortfolioSummary(data) {
         h += '<div class="sector-bar">';
         Object.keys(data.sector_allocation).forEach(function (k) {
             var v = data.sector_allocation[k];
-            h += '<span class="sbar-item" title="' + k + ' ' + v.pct + '%">' + k + ' <b>' + v.pct + '%</b></span>';
+            var cls = v.pct > 30 ? 'sbar-item warn' : 'sbar-item';
+            h += '<span class="' + cls + '" title="' + k + ' ' + v.pct + '%">' + k + ' <b>' + v.pct + '%</b></span>';
         });
         h += '</div>';
     }
@@ -388,10 +477,28 @@ function renderPortfolioSummary(data) {
             h += '<div class="warn-msg">⚠ ' + w + '</div>';
         });
     }
+
+    // 相关性警告
+    if (data.correlation_warnings && data.correlation_warnings.length > 0) {
+        data.correlation_warnings.forEach(function (cw) {
+            h += '<div class="warn-msg">🔗 ' + cw.msg + '</div>';
+        });
+    }
+
     // 再平衡建议
     if (data.rebalance_advice) {
         h += '<div class="rebalance-msg">💡 ' + data.rebalance_advice + '</div>';
     }
+
+    // 再平衡操作清单
+    if (data.rebalance_actions && data.rebalance_actions.length > 0) {
+        h += '<div class="rebalance-actions">';
+        data.rebalance_actions.forEach(function (ra) {
+            h += '<div class="ra-item"><span class="tag ' + (ra.priority === 'high' ? 'r' : 'y') + '">' + ra.priority + '</span> ' + ra.action + '：' + ra.detail + '</div>';
+        });
+        h += '</div>';
+    }
+
     // 卖出优先
     if (data.sell_priority && data.sell_priority.length > 0) {
         h += '<div class="sell-priority">🔴 优先关注卖出：';
@@ -400,6 +507,12 @@ function renderPortfolioSummary(data) {
         });
         h += '</div>';
     }
+
+    // 现金管理建议
+    if (data.cash_advice) {
+        h += '<div class="cash-advice">💰 仓位建议：权益<b>' + data.cash_advice.suggested_equity_pct + '%</b> / 现金<b>' + data.cash_advice.suggested_cash_pct + '%</b>（基于平均估值分位' + data.cash_advice.avg_valuation_pct + '%）</div>';
+    }
+
     el.innerHTML = h;
 }
 
@@ -421,9 +534,9 @@ function renderPortfolioList(data) {
         h += '<td>' + d.current_nav + '</td>';
         h += '<td class="' + (d.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(d.profit_pct) + '</td>';
         h += '<td><span class="tag">' + d.sector + '</span></td>';
-        var sa = d.sell_action_level;
-        var scls = sa >= 3 ? 'r' : sa >= 2 ? 'o' : sa >= 1 ? 'y' : 'g';
-        h += '<td><span class="tag ' + scls + '">' + d.sell_summary + '</span></td>';
+        var sa = d.sell_score || 0;
+        var scls = sa >= 60 ? 'r' : sa >= 40 ? 'o' : sa >= 20 ? 'y' : 'g';
+        h += '<td title="卖出紧迫度: ' + sa + '/100"><span class="tag ' + scls + '">' + d.sell_summary + '</span></td>';
         h += '<td><button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
         h += '</tr>';
     });

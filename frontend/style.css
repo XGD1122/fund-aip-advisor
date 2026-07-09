@@ -116,3 +116,40 @@ tr:hover{background:#fafafa}
 .advice-body .risk{color:#e65100;background:#fff3e0;padding:4px 8px;border-radius:4px;margin-top:4px}
 
 @media (max-width:768px){.summary-cards{grid-template-columns:repeat(2,1fr)}.form-row{flex-direction:column}}
+
+/* 技术指标仪表盘 */
+.detail-technicals{margin-top:12px;border-top:1px solid #eee;padding-top:12px}
+.detail-technicals h3{font-size:13px;font-weight:600;margin-bottom:8px}
+.tech-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tech-item{background:#f9f9f9;padding:8px 10px;border-radius:6px;text-align:center}
+.tech-item .tlbl{display:block;font-size:10px;color:#888;margin-bottom:2px}
+.tech-item .tval{display:block;font-size:12px;font-weight:600;color:#222}
+.tech-item .tz{display:block;font-size:9px;color:#aaa;margin-top:1px}
+
+/* 信号列表 */
+.signal-list{margin-top:8px}
+.signal-item{padding:3px 8px;margin:2px 0;border-radius:3px;font-size:11px;border-left:3px solid #ddd}
+.signal-item.r{border-left-color:#e53935;background:#fff5f5}
+.signal-item.o{border-left-color:#f57c00;background:#fff8f0}
+.signal-item.y{border-left-color:#f5a623;background:#fffdf5}
+
+/* 操作计划 */
+.action-plan{margin-top:10px;padding:10px;background:#f0f7ff;border-radius:6px;border:1px solid #d0e3f7}
+.ap-title{font-size:11px;font-weight:700;color:#1565c0;margin-top:6px;margin-bottom:4px}
+.ap-title:first-child{margin-top:0}
+.ap-item{font-size:10px;padding:2px 0;color:#333}
+.ap-next{font-size:9px;color:#999;margin-top:8px;text-align:right}
+
+/* 再平衡操作清单 */
+.rebalance-actions{margin-bottom:6px}
+.ra-item{font-size:10px;padding:2px 4px;color:#555}
+
+/* 现金建议 */
+.cash-advice{font-size:11px;color:#1565c0;padding:6px 10px;background:#e8f0fe;border-radius:6px;margin-top:6px;margin-bottom:6px}
+.cash-advice b{color:#0d47a1}
+
+/* 赛道超标标记 */
+.sbar-item.warn{background:#ffebee;color:#c62828}
+.sbar-item.warn b{color:#b71c1c}
+
+@media (max-width:768px){.tech-grid{grid-template-columns:repeat(2,1fr)}.summary-cards{grid-template-columns:repeat(2,1fr)}.form-row{flex-direction:column}}
