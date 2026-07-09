@@ -179,7 +179,7 @@ def _identify_sector(name: str) -> str:
     return "其他"
 
 
-def _deduplicate_sector(results: list, max_per_sector: int = 2) -> list:
+def _deduplicate_sector(results: list, max_per_sector: int = 4) -> list:
     """同赛道去重：每个赛道最多保留N只，防止抱团霸榜"""
     seen = {}
     filtered = []
