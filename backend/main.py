@@ -104,6 +104,29 @@ def api_admin_refresh():
     return {"status": "ok", "message": "数据刷新完成"}
 
 
+@app.get("/api/fund/{code}/nav/{date}")
+def api_fund_nav_on_date(code: str, date: str):
+    """查询某只基金在指定日期的净值"""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT unit_nav, daily_return FROM fund_nav WHERE code=? AND date=?",
+        (code, date)
+    ).fetchone()
+    conn.close()
+    if not row:
+        # 尝试找最近交易日
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT date, unit_nav FROM fund_nav WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
+            (code, date)
+        ).fetchone()
+        conn.close()
+        if row:
+            return {"code": code, "date": row["date"], "nav": round(float(row["unit_nav"]), 4), "exact": False, "note": f"{date} 无数据，使用最近交易日 {row['date']}"}
+        return {"error": f"基金 {code} 在 {date} 及之前均无净值数据"}
+    return {"code": code, "date": date, "nav": round(float(row["unit_nav"]), 4), "exact": True}
+
+
 @app.get("/api/fund/{code}")
 def api_fund_detail(code: str):
     """返回单只基金的净值历史、技术指标、评分明细"""
@@ -187,17 +210,43 @@ class PortfolioAdd(BaseModel):
     shares: Optional[float] = 0
     buy_amount: Optional[float] = 0
     notes: Optional[str] = ""
+    merge: Optional[bool] = True   # 默认合并到已有持仓
 
 
 @app.post("/api/portfolio/add")
 def api_portfolio_add(body: PortfolioAdd):
-    """添加一只持仓"""
+    """添加一只持仓（同基金默认合并，自动计算均价）"""
     conn = get_connection()
     basic = conn.execute("SELECT name FROM fund_basic WHERE code=?", (body.code,)).fetchone()
     if not basic:
         conn.close()
         return {"error": "基金不存在"}
     name = basic["name"]
+
+    if body.merge:
+        # 检查是否已有持仓，有则合并
+        existing = conn.execute(
+            "SELECT id, buy_amount, shares, buy_date, notes FROM portfolio WHERE code=? LIMIT 1", (body.code,)
+        ).fetchone()
+        if existing:
+            # 合并：累加金额和份额，保留最早买入日期
+            new_amount = float(existing["buy_amount"]) + (body.buy_amount if body.buy_amount else 0)
+            new_shares = float(existing["shares"]) + (body.shares if body.shares else 0)
+            new_nav = new_amount / new_shares if new_shares > 0 else body.buy_nav
+            old_notes = existing["notes"] or ""
+            new_batch = f"定投 {body.buy_date} @ {body.buy_nav}"
+            if old_notes:
+                new_notes = old_notes + " | " + new_batch
+            else:
+                new_notes = new_batch
+            conn.execute(
+                "UPDATE portfolio SET buy_amount=?, shares=?, buy_nav=?, notes=? WHERE id=?",
+                (new_amount, new_shares, new_nav, new_notes, existing["id"])
+            )
+            conn.commit()
+            conn.close()
+            return {"status": "ok", "message": f"已合并到 {name}（累计投入 ¥{new_amount:.0f}）"}
+
     conn.execute(
         "INSERT INTO portfolio (code, name, buy_date, buy_nav, shares, buy_amount, notes) VALUES (?,?,?,?,?,?,?)",
         (body.code, name, body.buy_date, body.buy_nav, body.shares, body.buy_amount, body.notes)

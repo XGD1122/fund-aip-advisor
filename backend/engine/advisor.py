@@ -10,7 +10,7 @@ from engine.indicators import calc_nav_percentile, calc_period_return_from_retur
 from engine.top20 import _identify_sector, SECTOR_KEYWORDS
 
 
-def get_sell_signals(code: str, buy_nav: float = None) -> dict:
+def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> dict:
     """对一只基金生成多维度卖出信号"""
     conn = get_connection()
     basic = conn.execute("SELECT name FROM fund_basic WHERE code=?", (code,)).fetchone()
@@ -53,10 +53,9 @@ def get_sell_signals(code: str, buy_nav: float = None) -> dict:
                 "msg": f"浮盈 {profit_pct*100:.1f}%，达到15%止盈线，建议卖出1/3锁定利润"})
             action_level = max(action_level, 1)
 
-    # === 2. 回撤止损 ===
-    if buy_nav and buy_nav > 0:
-        # 从买入后高点的回撤
-        buy_idx = df[df["date"] >= str(buy_nav)].index
+    # === 2. 回撤止损（基于买入日期） ===
+    if buy_date and buy_nav and buy_nav > 0:
+        buy_idx = df[df["date"] >= buy_date].index
         if len(buy_idx) > 0:
             peak_nav = float(nav.iloc[buy_idx[0]:].max())
             dd_from_peak = (current_nav - peak_nav) / peak_nav
@@ -318,7 +317,7 @@ def analyze_portfolio() -> dict:
         sector_allocation[sector] += current_value
 
         # 卖出信号
-        sell = get_sell_signals(code, buy_nav)
+        sell = get_sell_signals(code, buy_nav, h["buy_date"])
 
         details.append({
             "id": h["id"],

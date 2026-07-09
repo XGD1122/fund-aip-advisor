@@ -21,9 +21,9 @@ function warnLabel(w) {
 async function load(force) {
     var el = document.getElementById("loading"), err = document.getElementById("error");
     var tbl = document.getElementById("table"), fr = document.getElementById("freshness");
-    el.style.display = "block"; el.textContent = "正在分析 " + Math.round((Date.now() - t0) / 1000) + " 秒...";
     err.style.display = "none"; tbl.style.display = "none";
     var t0 = Date.now();
+    el.style.display = "block"; el.textContent = "正在分析...";
     var timer = setInterval(function () {
         el.textContent = "正在分析 " + Math.round((Date.now() - t0) / 1000) + " 秒...(2000+只基金)";
     }, 1000);
@@ -350,6 +350,9 @@ function loadPortfolio() {
         .then(function (data) {
             renderPortfolioSummary(data);
             renderPortfolioList(data);
+            // 更新已持有基金列表
+            _heldCodes = [];
+            if (data.details) data.details.forEach(function (h) { _heldCodes.push(h.code); });
         }).catch(function (e) {
             console.error("加载持仓失败:", e);
         });
@@ -447,7 +450,22 @@ document.getElementById("hf-cancel").onclick = function () {
     clearHoldingForm();
 };
 
-// 输入代码自动补全名称
+// 选择日期后自动查询净值
+document.getElementById("hf-date").onchange = function () {
+    var code = document.getElementById("hf-code").value.trim();
+    var date = this.value;
+    if (code.length === 6 && date) {
+        var navEl = document.getElementById("hf-nav");
+        navEl.value = "查询中...";
+        fetch(API + "/fund/" + code + "/nav/" + date)
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d.error) { navEl.value = ""; navEl.placeholder = d.error; return; }
+                navEl.value = d.nav;
+                if (!d.exact) navEl.placeholder = d.note;
+            }).catch(function () { navEl.value = ""; });
+    }
+};
 document.getElementById("hf-code").oninput = function () {
     var code = this.value.trim();
     var nameEl = document.getElementById("hf-name");
@@ -456,7 +474,11 @@ document.getElementById("hf-code").oninput = function () {
         fetch(API + "/fund/" + code)
             .then(function (r) { return r.json(); })
             .then(function (d) {
-                nameEl.textContent = d.name || "未找到";
+                var label = d.name || "未找到";
+                if (_heldCodes.indexOf(code) >= 0) {
+                    label += "（已有持仓，将自动合并）";
+                }
+                nameEl.textContent = label;
             }).catch(function () { nameEl.textContent = "未找到"; });
     } else {
         nameEl.textContent = "";
