@@ -102,6 +102,78 @@ def api_admin_refresh():
     return {"status": "ok", "message": "数据刷新完成"}
 
 
+@app.get("/api/fund/{code}")
+def api_fund_detail(code: str):
+    """返回单只基金的净值历史、技术指标、评分明细"""
+    conn = get_connection()
+    basic = conn.execute(
+        "SELECT code, name, fund_type FROM fund_basic WHERE code=?", (code,)
+    ).fetchone()
+    if not basic:
+        return {"error": "基金不存在"}
+
+    nav_rows = conn.execute(
+        "SELECT date, unit_nav, acc_nav, daily_return FROM fund_nav WHERE code=? ORDER BY date",
+        (code,)
+    ).fetchall()
+
+    signal_rows = conn.execute(
+        "SELECT date, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14 FROM fund_signal WHERE code=? ORDER BY date",
+        (code,)
+    ).fetchall()
+    conn.close()
+
+    navs = [{"date": r["date"], "nav": round(float(r["unit_nav"]), 4),
+             "daily_return": round(float(r["daily_return"] or 0), 4)} for r in nav_rows]
+    signals = [{"date": r["date"], "ma5": round(float(r["ma5"] or 0), 4),
+                "ma20": round(float(r["ma20"] or 0), 4),
+                "ma60": round(float(r["ma60"] or 0), 4),
+                "ma120": round(float(r["ma120"] or 0), 4),
+                "macd_dif": round(float(r["macd_dif"] or 0), 4),
+                "macd_dea": round(float(r["macd_dea"] or 0), 4),
+                "macd_hist": round(float(r["macd_hist"] or 0), 4),
+                "rsi": round(float(r["rsi14"] or 50), 1)}
+               for r in signal_rows]
+
+    # 计算近几期收益
+    from engine.indicators import calc_period_return_from_returns
+    import pandas as pd
+    df_nav = pd.DataFrame(nav_rows, columns=["date", "unit_nav", "acc_nav", "daily_return"])
+    df_nav["daily_return"] = pd.to_numeric(df_nav["daily_return"], errors="coerce").fillna(0)
+    df_nav["unit_nav"] = pd.to_numeric(df_nav["unit_nav"], errors="coerce")
+    returns_series = df_nav["daily_return"]  # keep as Series for .tail()
+    rets = {
+        "r5d": round(calc_period_return_from_returns(returns_series, 5) * 100, 2),
+        "r10d": round(calc_period_return_from_returns(returns_series, 10) * 100, 2),
+        "r20d": round(calc_period_return_from_returns(returns_series, 20) * 100, 2),
+        "r60d": round(calc_period_return_from_returns(returns_series, 60) * 100, 2),
+        "r1y": round(calc_period_return_from_returns(returns_series, 252) * 100, 2),
+    }
+
+    # 最新技术指标
+    last_sig = signals[-1] if signals else {}
+
+    return {
+        "code": basic["code"],
+        "name": basic["name"],
+        "fund_type": basic["fund_type"],
+        "nav_history": navs,
+        "signals": signals[-252:] if len(signals) > 252 else signals,  # 最近1年
+        "latest": {
+            "rsi": last_sig.get("rsi", 50),
+            "ma5": last_sig.get("ma5", 0),
+            "ma20": last_sig.get("ma20", 0),
+            "ma60": last_sig.get("ma60", 0),
+            "ma120": last_sig.get("ma120", 0),
+            "macd_dif": last_sig.get("macd_dif", 0),
+            "macd_dea": last_sig.get("macd_dea", 0),
+            "nav": navs[-1]["nav"] if navs else 0,
+        },
+        "returns": rets,
+        "record_count": len(navs),
+    }
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}

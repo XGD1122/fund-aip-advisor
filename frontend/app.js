@@ -46,7 +46,7 @@ function render(data) {
     var h = "";
     data.results.forEach(function (r, i) {
         var n = i + 1, top = n <= 3 ? " top" : "";
-        h += '<tr>';
+        h += '<tr class="clickable" onclick="showDetail(\'' + r.code + '\', \'' + r.name.replace(/'/g, "\\'") + '\')">';
         h += '<td class="rnk' + n + top + '">' + n + '</td>';
         h += '<td class="code">' + r.code + '</td>';
         h += '<td class="name" title="' + r.name + '">' + r.name + '</td>';
@@ -65,6 +65,183 @@ function render(data) {
     document.getElementById("tbody").innerHTML = h;
 }
 
+// ============================================================
+// 详情弹窗
+// ============================================================
+var navChart = null, rsiChart = null, macdChart = null;
+
+function chartColors() {
+    var style = getComputedStyle(document.body);
+    return {
+        nav: style.getPropertyValue("--c-up") || "#e15241",
+        grid: style.getPropertyValue("--c-border") || "#e0e0e0",
+        text: style.getPropertyValue("--c-text") || "#666",
+        rsiLine: "#7b4bff",
+        rsiHi: "rgba(225,82,65,0.15)",
+        rsiLo: "rgba(0,179,110,0.15)",
+        macdUp: "rgba(225,82,65,0.6)",
+        macdDn: "rgba(0,179,110,0.6)",
+        dif: "#e15241",
+        dea: "#f5a623",
+        ma20: "#f5a623",
+        ma60: "#7b4bff",
+        ma120: "#00b36e"
+    };
+}
+
+async function showDetail(code, name) {
+    document.getElementById("modal-title").textContent = name + " (" + code + ")";
+    document.getElementById("modal-overlay").style.display = "flex";
+    document.getElementById("detail-stats").innerHTML = '<div class="loading">加载中...</div>';
+
+    try {
+        var res = await fetch(API + "/fund/" + code);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        var d = await res.json();
+        if (d.error) throw new Error(d.error);
+        renderCharts(d);
+        renderStats(d);
+    } catch (e) {
+        document.getElementById("detail-stats").innerHTML = '<div class="error">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function renderCharts(d) {
+    var C = chartColors();
+    var dates = d.signals.map(function (s) { return s.date; });
+    // 对齐净值日期
+    var navMap = {};
+    d.nav_history.forEach(function (n) { navMap[n.date] = n.nav; });
+    var navs = dates.map(function (dt) { return navMap[dt] || null; });
+
+    var ma20 = d.signals.map(function (s) { return s.ma20 || null; });
+    var ma60 = d.signals.map(function (s) { return s.ma60 || null; });
+    var ma120 = d.signals.map(function (s) { return s.ma120 || null; });
+    var rsis = d.signals.map(function (s) { return s.rsi || null; });
+    var difs = d.signals.map(function (s) { return s.macd_dif || null; });
+    var deas = d.signals.map(function (s) { return s.macd_dea || null; });
+    var hists = d.signals.map(function (s) { return s.macd_hist || null; });
+
+    // 净值+均线
+    if (navChart) navChart.destroy();
+    navChart = new Chart(document.getElementById("chart-nav"), {
+        type: "line",
+        data: {
+            labels: dates,
+            datasets: [
+                { label: "净值", data: navs, borderColor: C.nav, borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                { label: "MA20", data: ma20, borderColor: C.ma20, borderWidth: 1, pointRadius: 0, borderDash: [4, 2] },
+                { label: "MA60", data: ma60, borderColor: C.ma60, borderWidth: 1, pointRadius: 0, borderDash: [4, 2] },
+                { label: "MA120", data: ma120, borderColor: C.ma120, borderWidth: 1, pointRadius: 0, borderDash: [4, 2] }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "index", intersect: false },
+            plugins: { legend: { position: "top", labels: { boxWidth: 20, padding: 10, font: { size: 11 } } } },
+            scales: {
+                x: { display: true, ticks: { maxTicksLimit: 10, font: { size: 10 } }, grid: { color: C.grid } },
+                y: { grid: { color: C.grid }, ticks: { font: { size: 10 } } }
+            }
+        }
+    });
+
+    // RSI
+    if (rsiChart) rsiChart.destroy();
+    rsiChart = new Chart(document.getElementById("chart-rsi"), {
+        type: "line",
+        data: {
+            labels: dates,
+            datasets: [{
+                label: "RSI(14)", data: rsis, borderColor: C.rsiLine, borderWidth: 1.5, pointRadius: 0,
+                fill: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "index", intersect: false },
+            plugins: {
+                legend: { display: false },
+                annotation: false
+            },
+            scales: {
+                x: { display: true, ticks: { maxTicksLimit: 8, font: { size: 10 } }, grid: { color: C.grid } },
+                y: { min: 0, max: 100, grid: { color: C.grid }, ticks: { font: { size: 10 }, stepSize: 20 } }
+            }
+        },
+        plugins: [{
+            id: "rsiZones",
+            beforeDraw: function (chart) {
+                var ctx = chart.ctx, xAxis = chart.scales.x, yAxis = chart.scales.y;
+                ctx.fillStyle = C.rsiHi;
+                ctx.fillRect(xAxis.left, yAxis.getPixelForValue(70), xAxis.width, yAxis.getPixelForValue(100) - yAxis.getPixelForValue(70));
+                ctx.fillStyle = C.rsiLo;
+                ctx.fillRect(xAxis.left, yAxis.getPixelForValue(0), xAxis.width, yAxis.getPixelForValue(30) - yAxis.getPixelForValue(0));
+            }
+        }]
+    });
+
+    // MACD
+    if (macdChart) macdChart.destroy();
+    macdChart = new Chart(document.getElementById("chart-macd"), {
+        type: "bar",
+        data: {
+            labels: dates,
+            datasets: [
+                { label: "MACD柱", data: hists, backgroundColor: hists.map(function (v) { return v >= 0 ? C.macdUp : C.macdDn; }), borderWidth: 0 },
+                { label: "DIF", data: difs, borderColor: C.dif, borderWidth: 1, pointRadius: 0, type: "line" },
+                { label: "DEA", data: deas, borderColor: C.dea, borderWidth: 1, pointRadius: 0, type: "line" }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "index", intersect: false },
+            plugins: { legend: { position: "top", labels: { boxWidth: 12, padding: 6, font: { size: 10 } } } },
+            scales: {
+                x: { display: true, ticks: { maxTicksLimit: 8, font: { size: 10 } }, grid: { color: C.grid } },
+                y: { grid: { color: C.grid }, ticks: { font: { size: 10 } } }
+            }
+        }
+    });
+}
+
+function renderStats(d) {
+    var l = d.latest;
+    var h = '<div class="stat-grid">';
+    h += '<div class="stat"><span class="lbl">最新净值</span><span class="val">' + l.nav + '</span></div>';
+    h += '<div class="stat"><span class="lbl">RSI(14)</span><span class="val">' + l.rsi + '</span></div>';
+    h += '<div class="stat"><span class="lbl">MA20</span><span class="val">' + (l.ma20 ? l.ma20.toFixed(4) : "-") + '</span></div>';
+    h += '<div class="stat"><span class="lbl">MA60</span><span class="val">' + (l.ma60 ? l.ma60.toFixed(4) : "-") + '</span></div>';
+    h += '<div class="stat"><span class="lbl">MA120</span><span class="val">' + (l.ma120 ? l.ma120.toFixed(4) : "-") + '</span></div>';
+    h += '<div class="stat"><span class="lbl">记录数</span><span class="val">' + d.record_count + '条</span></div>';
+    h += '</div>';
+    h += '<div class="ret-grid">';
+    h += '<span>近5日: <b class="' + (d.returns.r5d >= 0 ? "up" : "down") + '">' + fmt(d.returns.r5d) + '</b></span>';
+    h += '<span>近10日: <b class="' + (d.returns.r10d >= 0 ? "up" : "down") + '">' + fmt(d.returns.r10d) + '</b></span>';
+    h += '<span>近20日: <b class="' + (d.returns.r20d >= 0 ? "up" : "down") + '">' + fmt(d.returns.r20d) + '</b></span>';
+    h += '<span>近60日: <b class="' + (d.returns.r60d >= 0 ? "up" : "down") + '">' + fmt(d.returns.r60d) + '</b></span>';
+    h += '<span>近1年: <b class="' + (d.returns.r1y >= 0 ? "up" : "down") + '">' + fmt(d.returns.r1y) + '</b></span>';
+    h += '</div>';
+    document.getElementById("detail-stats").innerHTML = h;
+}
+
+// 弹窗控制
+document.getElementById("modal-close").onclick = closeDetail;
+document.getElementById("modal-overlay").onclick = function (e) {
+    if (e.target === this) closeDetail();
+};
+
+function closeDetail() {
+    document.getElementById("modal-overlay").style.display = "none";
+    if (navChart) { navChart.destroy(); navChart = null; }
+    if (rsiChart) { rsiChart.destroy(); rsiChart = null; }
+    if (macdChart) { macdChart.destroy(); macdChart = null; }
+}
+
+// 按钮
 document.getElementById("refresh-btn").onclick = function () {
     this.textContent = "刷新中..."; this.disabled = true;
     load(true).finally(function () { this.textContent = "刷新数据"; this.disabled = false; }.bind(this));
