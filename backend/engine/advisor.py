@@ -294,6 +294,11 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         "next_review_date": (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d"),
     } if urgent_actions or monitor_items else None
 
+    # 提取最高优先级的建议卖出比例
+    suggested_sell_pct = 0
+    if urgent_actions:
+        suggested_sell_pct = urgent_actions[0].get("pct", 0)
+
     return {
         "code": code,
         "name": basic["name"] if basic else code,
@@ -306,6 +311,7 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         "signals": signals,
         "summary": summary,
         "sell_score": min(100, sell_score),
+        "suggested_sell_pct": suggested_sell_pct,
         "action_plan": action_plan,
         "technicals": {
             "ma5": round(ma5, 4), "ma10": round(ma10, 4),
@@ -538,7 +544,7 @@ def analyze_portfolio() -> dict:
     """
     conn = get_connection()
     holdings = conn.execute(
-        "SELECT id, code, name, buy_date, buy_nav, shares, buy_amount FROM portfolio ORDER BY buy_date"
+        "SELECT id, code, name, buy_date, buy_nav, shares, buy_amount FROM portfolio WHERE status IS NULL OR status='active' OR status='' ORDER BY buy_date"
     ).fetchall()
     conn.close()
 
@@ -619,6 +625,8 @@ def analyze_portfolio() -> dict:
             "sell_summary": sell.get("summary", ""),
             "sell_score": sell.get("sell_score", 0),
             "sell_signals": sell.get("signals", []),
+            "suggested_sell_pct": sell.get("suggested_sell_pct", 0),
+            "sell_action_plan": sell.get("action_plan"),
         })
 
     total_profit = total_value - total_invested

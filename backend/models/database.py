@@ -146,6 +146,10 @@ def _migrate_columns(cur):
         ("fund_signal", "bb_width", "REAL"),
         ("fund_signal", "atr14", "REAL"),
         ("fund_signal", "ma60_slope", "REAL"),
+        # 持仓卖出功能
+        ("portfolio", "status", "TEXT DEFAULT 'active'"),
+        ("portfolio", "sell_date", "TEXT"),
+        ("portfolio", "sell_nav", "REAL"),
     ]
     for table, column, col_def in migrations:
         try:

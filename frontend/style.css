@@ -75,6 +75,10 @@ tr:hover{background:#fafafa}
 .btn-ghost:hover{background:#f5f5f5}
 .btn-ghost-sm{padding:2px 8px;font-size:10px;background:none;border:1px solid #ddd;border-radius:3px;cursor:pointer;color:#888}
 .btn-ghost-sm:hover{background:#ffebee;color:#c62828;border-color:#f44336}
+.btn-sell-sm{padding:2px 8px;font-size:10px;background:#4caf50;color:#fff;border:1px solid #4caf50;border-radius:3px;cursor:pointer}
+.btn-sell-sm:hover{background:#388e3c}
+.portfolio-history{margin-top:18px;padding-top:16px;border-top:2px solid #e0e0e0}
+.portfolio-history h3{font-size:13px;color:#666;margin-bottom:10px}
 
 /* 汇总卡片 */
 .portfolio-summary{margin-bottom:12px}

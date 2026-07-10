@@ -537,7 +537,9 @@ function renderPortfolioList(data) {
         var sa = d.sell_score || 0;
         var scls = sa >= 60 ? 'r' : sa >= 40 ? 'o' : sa >= 20 ? 'y' : 'g';
         h += '<td title="卖出紧迫度: ' + sa + '/100"><span class="tag ' + scls + '">' + d.sell_summary + '</span></td>';
-        h += '<td><button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
+        var ssp = d.suggested_sell_pct || 0;
+        h += '<td><button class="btn-sell-sm" onclick="sellHolding(' + d.id + ',' + d.current_nav + ',\'' + (d.name || '').replace(/'/g, "\\'") + '\',' + ssp + ')">卖出</button> ';
+        h += '<button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
         h += '</tr>';
     });
     h += '</tbody></table>';
@@ -548,7 +550,77 @@ function deleteHolding(id) {
     if (!confirm("确认删除这笔持仓记录？")) return;
     fetch(API + "/portfolio/" + id, { method: "DELETE" })
         .then(function (r) { return r.json(); })
-        .then(function () { loadPortfolio(); });
+        .then(function () { loadPortfolio(); loadHistory(); });
+}
+
+function sellHolding(id, currentNav, name, suggestedPct) {
+    var tip = suggestedPct && suggestedPct > 0 ? ("\n建议卖出比例: " + suggestedPct + "%") : "";
+    var pctInput = prompt("卖出「" + name + "」" + tip + "\n\n请输入卖出比例（%）：\n100 = 全部卖出 | 50 = 卖一半 | 33 = 卖1/3", suggestedPct || 100);
+    if (pctInput === null || pctInput === "") return;
+    var sellPct = parseFloat(pctInput);
+    if (isNaN(sellPct) || sellPct <= 0 || sellPct > 100) {
+        alert("请输入有效的卖出比例 (1-100)");
+        return;
+    }
+    var sellNav = prompt("卖出「" + name + "」\n卖出比例: " + sellPct + "%\n\n请输入卖出净值（当前净值：" + currentNav + "）", currentNav);
+    if (sellNav === null || sellNav === "") return;
+    var sellNavNum = parseFloat(sellNav);
+    if (isNaN(sellNavNum) || sellNavNum <= 0) {
+        alert("请输入有效的卖出净值");
+        return;
+    }
+    fetch(API + "/portfolio/" + id + "/sell", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sell_nav: sellNavNum, sell_pct: sellPct })
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+            var resultMsg = sellPct >= 100 ? "已全部卖出 " + data.name : "已卖出 " + data.name + " (" + data.sell_pct + "%)";
+            alert(resultMsg + "\n卖出净值: " + data.sell_nav + "\n盈亏: " + (data.profit >= 0 ? "+" : "") + data.profit + "元 (" + (data.profit_pct >= 0 ? "+" : "") + data.profit_pct + "%)");
+            loadPortfolio();
+            loadHistory();
+        });
+}
+
+function loadHistory() {
+    fetch(API + "/portfolio/history")
+        .then(function (r) { return r.json(); })
+        .then(function (data) { renderHistory(data); })
+        .catch(function (e) { console.error("加载历史失败:", e); });
+}
+
+function renderHistory(data) {
+    var el = document.getElementById("portfolio-history");
+    var listEl = document.getElementById("history-list");
+    if (data.count === 0 || !data.history) {
+        el.style.display = "none";
+        return;
+    }
+    el.style.display = "block";
+    var h = '<table class="pf-table"><thead><tr>';
+    h += '<th>代码</th><th>名称</th><th>买入日</th><th>买入价</th><th>卖出日</th><th>卖出价</th><th>份额</th><th>盈亏</th><th>收益率</th><th>操作</th>';
+    h += '</tr></thead><tbody>';
+    data.history.forEach(function (d) {
+        h += '<tr>';
+        h += '<td class="code">' + d.code + '</td>';
+        h += '<td class="name" title="' + d.name + '">' + d.name + '</td>';
+        h += '<td>' + d.buy_date + '</td>';
+        h += '<td>' + d.buy_nav + '</td>';
+        h += '<td>' + d.sell_date + '</td>';
+        h += '<td>' + d.sell_nav + '</td>';
+        h += '<td>' + d.shares + '</td>';
+        h += '<td class="' + (d.profit >= 0 ? 'up' : 'down') + '">' + (d.profit >= 0 ? '+' : '') + d.profit + '</td>';
+        h += '<td class="' + (d.profit_pct >= 0 ? 'up' : 'down') + '">' + (d.profit_pct >= 0 ? '+' : '') + d.profit_pct + '%</td>';
+        h += '<td><button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
+        h += '</tr>';
+    });
+    h += '</tbody></table>';
+    listEl.innerHTML = h;
 }
 
 // 添加持仓按钮
@@ -642,4 +714,5 @@ function addHoldingQuick(code) {
 
 // 持仓自动加载
 loadPortfolio();
+loadHistory();
 load(false);

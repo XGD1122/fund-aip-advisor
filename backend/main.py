@@ -263,7 +263,8 @@ def api_portfolio_add(body: PortfolioAdd):
     if body.merge:
         # 检查是否已有持仓，有则合并
         existing = conn.execute(
-            "SELECT id, buy_amount, shares, buy_date, notes FROM portfolio WHERE code=? LIMIT 1", (body.code,)
+            "SELECT id, buy_amount, shares, buy_date, notes FROM portfolio WHERE code=? AND (status IS NULL OR status='active' OR status='') LIMIT 1",
+            (body.code,)
         ).fetchone()
         if existing:
             # 合并：累加金额和份额，保留最早买入日期
@@ -318,6 +319,106 @@ def api_portfolio_update(holding_id: int, notes: str = ""):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+
+class SellRequest(BaseModel):
+    sell_nav: float
+    sell_date: Optional[str] = None  # 默认当天
+    sell_pct: Optional[float] = 100  # 卖出比例 1-100，默认100=全部卖出
+
+
+@app.put("/api/portfolio/{holding_id}/sell")
+def api_portfolio_sell(holding_id: int, body: SellRequest):
+    """卖出一笔持仓（支持部分卖出：sell_pct<100 时按比例减仓）"""
+    conn = get_connection()
+    holding = conn.execute(
+        "SELECT code, name, buy_nav, buy_amount, shares, status FROM portfolio WHERE id=?",
+        (holding_id,)
+    ).fetchone()
+    if not holding:
+        conn.close()
+        return {"error": "持仓不存在"}
+    if holding["status"] == "sold":
+        conn.close()
+        return {"error": "该持仓已卖出"}
+
+    sell_date = body.sell_date or datetime.now().strftime("%Y-%m-%d")
+    sell_nav = body.sell_nav
+    sell_pct = max(1, min(100, body.sell_pct or 100))  # 限制在1-100
+
+    shares = float(holding["shares"])
+    buy_amount = float(holding["buy_amount"])
+    buy_nav = float(holding["buy_nav"])
+
+    sell_shares = shares * (sell_pct / 100)
+    sell_cost = buy_amount * (sell_pct / 100)  # 按比例分摊成本
+    proceeds = sell_nav * sell_shares
+    profit = proceeds - sell_cost
+    profit_pct = (proceeds / sell_cost - 1) * 100 if sell_cost > 0 else 0
+
+    if sell_pct >= 100:
+        # 全部卖出：标记为 sold
+        conn.execute(
+            "UPDATE portfolio SET status='sold', sell_date=?, sell_nav=? WHERE id=?",
+            (sell_date, sell_nav, holding_id)
+        )
+    else:
+        # 部分卖出：减少份额和金额
+        remain_shares = shares - sell_shares
+        remain_amount = buy_amount - sell_cost
+        new_buy_nav = remain_amount / remain_shares if remain_shares > 0 else buy_nav
+        conn.execute(
+            "UPDATE portfolio SET shares=?, buy_amount=?, buy_nav=?, notes=notes || ? WHERE id=?",
+            (round(remain_shares, 2), round(remain_amount, 2), round(new_buy_nav, 4),
+             f" | 部分卖出 {sell_date} @ {sell_nav} ({sell_pct:.0f}%)", holding_id)
+        )
+
+    conn.commit()
+    conn.close()
+    return {
+        "status": "ok",
+        "code": holding["code"],
+        "name": holding["name"],
+        "buy_nav": buy_nav,
+        "sell_nav": sell_nav,
+        "sell_date": sell_date,
+        "sell_pct": sell_pct,
+        "sell_shares": round(sell_shares, 2),
+        "cost": round(sell_cost, 2),
+        "proceeds": round(proceeds, 2),
+        "profit": round(profit, 2),
+        "profit_pct": round(profit_pct, 2),
+    }
+
+
+@app.get("/api/portfolio/history")
+def api_portfolio_history():
+    """已卖出的历史持仓记录"""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT id, code, name, buy_date, buy_nav, sell_date, sell_nav,
+               shares, buy_amount,
+               ROUND(shares * sell_nav, 2) as proceeds,
+               ROUND(shares * sell_nav - shares * buy_nav, 2) as profit,
+               CASE WHEN buy_amount > 0
+                    THEN ROUND((shares * sell_nav - buy_amount) / buy_amount * 100, 2)
+                    ELSE ROUND((sell_nav / buy_nav - 1) * 100, 2)
+               END as profit_pct
+        FROM portfolio WHERE status='sold' ORDER BY sell_date DESC
+    """).fetchall()
+    conn.close()
+
+    history = []
+    for r in rows:
+        h = dict(r)
+        total_buy = float(r["buy_nav"]) * float(r["shares"])
+        total_sell = float(r["sell_nav"]) * float(r["shares"])
+        h["total_cost"] = round(total_buy, 2)
+        h["total_proceeds"] = round(total_sell, 2)
+        h["total_profit"] = round(total_sell - total_buy, 2)
+        history.append(h)
+
+    return {"status": "ok", "count": len(history), "history": history}
 
 
 @app.get("/api/portfolio/analysis")
