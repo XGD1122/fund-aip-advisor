@@ -67,10 +67,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS fund_signal (
             code TEXT NOT NULL,
             date TEXT NOT NULL,
+            unit_nav REAL,
             ma5 REAL, ma20 REAL, ma60 REAL, ma120 REAL,
             macd_dif REAL, macd_dea REAL, macd_hist REAL,
             rsi14 REAL,
             bb_upper REAL, bb_mid REAL, bb_lower REAL,
+            kdj_k REAL, kdj_d REAL, kdj_j REAL,
+            bb_width REAL, atr14 REAL, ma60_slope REAL,
             PRIMARY KEY (code, date)
         )
     """)
@@ -108,6 +111,9 @@ def init_db():
             shares REAL DEFAULT 0,
             buy_amount REAL DEFAULT 0,
             notes TEXT DEFAULT '',
+            status TEXT DEFAULT 'active',
+            sell_date TEXT,
+            sell_nav REAL,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )
     """)
@@ -126,9 +132,17 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_nav_code_date ON fund_nav(code, date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_score_date ON fund_score(calc_date, mode)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_code_date ON fund_signal(code, date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_fund_basic_type ON fund_basic(fund_type)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_status ON portfolio(status)")
 
     # 迁移：为已有数据库添加新列
     _migrate_columns(cur)
+
+    # 规范化持仓状态：NULL 和 '' 统一为 'active'
+    try:
+        cur.execute("UPDATE portfolio SET status='active' WHERE status IS NULL OR status=''")
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -140,6 +154,7 @@ def _migrate_columns(cur):
         ("fund_score", "tracking_score", "REAL DEFAULT 50"),
         ("fund_score", "tracking_error", "REAL DEFAULT 0"),
         # 新增技术指标字段
+        ("fund_signal", "unit_nav", "REAL"),
         ("fund_signal", "kdj_k", "REAL"),
         ("fund_signal", "kdj_d", "REAL"),
         ("fund_signal", "kdj_j", "REAL"),
@@ -154,8 +169,12 @@ def _migrate_columns(cur):
     for table, column, col_def in migrations:
         try:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
-        except Exception:
-            pass  # 列已存在则跳过
+        except Exception as e:
+            # SQLite doesn't have IF NOT EXISTS for ADD COLUMN
+            # Silently ignore duplicate column errors (slightly different messages across versions)
+            msg = str(e).lower()
+            if "duplicate column" not in msg and "already exists" not in msg:
+                print(f"[WARN] 迁移失败 {table}.{column}: {e}")
 
 
 if __name__ == "__main__":

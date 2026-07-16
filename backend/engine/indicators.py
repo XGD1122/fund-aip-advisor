@@ -51,7 +51,7 @@ def calc_max_drawdown(nav: pd.Series, window_days: int = 252) -> float:
     return float(drawdown.min())
 
 
-def calc_sharpe(returns: pd.Series, risk_free: float = 0.025, window_days: int = 252) -> float:
+def calc_sharpe(returns: pd.Series, risk_free: float = 0.017, window_days: int = 252) -> float:
     """年化夏普比率"""
     excess = returns - risk_free / 252
     if excess.std() == 0 or len(excess) < window_days:
@@ -119,8 +119,6 @@ def calc_adjusted_nav(nav: pd.Series, returns: pd.Series) -> pd.Series:
     """
     if len(nav) < 2:
         return nav.copy()
-    adj = pd.Series(index=nav.index, dtype=float)
-    adj.iloc[0] = nav.iloc[0]
     cum_ret = (1 + returns.fillna(0)).cumprod()
     adj = nav.iloc[0] * cum_ret
     # 对齐索引
@@ -215,11 +213,6 @@ def calc_kdj(close: pd.Series, n: int = 9, m1: int = 3, m2: int = 3) -> dict:
     k = rsv.ewm(span=m1, adjust=False).mean()
     d = k.ewm(span=m2, adjust=False).mean()
     j = 3 * k - 2 * d
-
-    # 限制在0-100
-    k = k.clip(0, 100)
-    d = d.clip(0, 100)
-    j = j.clip(0, 100)
 
     return {"kdj_k": k, "kdj_d": d, "kdj_j": j}
 

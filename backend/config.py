@@ -22,6 +22,5 @@ NAV_MIN_RECORDS = 60
 # ============================================================
 FLAT_LINE_THRESHOLD = 0.0001       # 横盘基金：日均绝对值 < 0.01%
 PROFITABILITY_1Y_MIN = 0.02        # 1年最低收益 2%
-FREEFALL_20D = 0.25                # 20日跌幅超25%视为崩盘
 TOP_N_DEFAULT = 20
 RISK_FREE_RATE = 0.017

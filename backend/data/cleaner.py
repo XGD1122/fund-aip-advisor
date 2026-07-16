@@ -1,6 +1,9 @@
 import pandas as pd
 import numpy as np
+import logging
 from models.database import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 def clean_nav_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -49,7 +52,8 @@ def save_nav_data(df: pd.DataFrame):
                 float(row.get("acc_nav", 0) or 0),
                 float(row.get("daily_return", 0) or 0),
             ))
-        except Exception:
+        except Exception as e:
+            logger.warning("保存净值失败 %s %s: %s", str(row.get("code","?")), str(row.get("date","?")), e)
             continue
     conn.commit()
     conn.close()

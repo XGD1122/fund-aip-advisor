@@ -1,6 +1,17 @@
-const API = "http://localhost:8000/api";
+const API = (function() {
+    if (window.location.protocol === "file:") return "http://localhost:8000/api";
+    return window.location.origin + "/api";
+})();
 
-function fmt(v) { if (v === null || v === undefined || isNaN(v)) return "-"; return (v >= 0 ? "+" : "") + v.toFixed(2) + "%"; }
+function escHtml(s) {
+    if (!s) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function escAttr(s) {
+    if (!s) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function fmt(v) { if (v === null || v === undefined || isNaN(v) || v === "") return "-"; var p = Number(v).toFixed(2); return (v > 0 ? "+" : "") + p + "%"; }
 function clr(v) { if (v === null || v === undefined || isNaN(v)) return ""; return v > 0 ? "up" : v < 0 ? "down" : ""; }
 function sclr(s) { if (s >= 80) return "s-hi"; if (s >= 65) return "s-gd"; if (s >= 50) return "s-md"; return "s-lo"; }
 
@@ -27,9 +38,14 @@ async function load(force) {
     var timer = setInterval(function () {
         el.textContent = "正在分析 " + Math.round((Date.now() - t0) / 1000) + " 秒...(2000+只基金)";
     }, 1000);
+
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function () { controller.abort(); }, 120000);
+
     try {
-        var res = await fetch(API + "/top20" + (force ? "?refresh=true" : ""));
+        var res = await fetch(API + "/top20" + (force ? "?refresh=true" : ""), { signal: controller.signal });
         clearInterval(timer);
+        clearTimeout(timeoutId);
         if (!res.ok) throw new Error("HTTP " + res.status);
         var data = await res.json();
         if (!data.results || !data.results.length) { err.textContent = "暂无符合条件的基金"; err.style.display = "block"; el.style.display = "none"; return; }
@@ -38,7 +54,13 @@ async function load(force) {
         fr.textContent = data.updated_at + " (" + Math.round((Date.now() - t0) / 1000) + "s)"; fr.className = "fresh";
     } catch (e) {
         clearInterval(timer);
-        err.textContent = "加载失败: " + e.message; err.style.display = "block"; el.style.display = "none";
+        clearTimeout(timeoutId);
+        if (e.name === "AbortError") {
+            err.textContent = "加载超时，请重试";
+        } else {
+            err.textContent = "加载失败: " + e.message;
+        }
+        err.style.display = "block"; el.style.display = "none";
     }
 }
 
@@ -46,16 +68,16 @@ function render(data) {
     var h = "";
     data.results.forEach(function (r, i) {
         var n = i + 1, top = n <= 3 ? " top" : "";
-        h += '<tr class="clickable" onclick="showDetail(\'' + r.code + '\', \'' + r.name.replace(/'/g, "\\'") + '\')">';
+        h += '<tr class="clickable" onclick="showDetail(\'' + escAttr(r.code) + '\', \'' + escAttr(r.name) + '\')">';
         h += '<td class="rnk' + n + top + '">' + n + '</td>';
-        h += '<td class="code">' + r.code + '</td>';
-        h += '<td class="name" title="' + r.name + '">' + r.name + '</td>';
+        h += '<td class="code">' + escHtml(r.code) + '</td>';
+        h += '<td class="name" title="' + escAttr(r.name) + '">' + escHtml(r.name) + '</td>';
         h += '<td class="' + sclr(r.score) + ' bold">' + r.score + '</td>';
         h += '<td class="' + clr(r.ret_5d) + '">' + fmt(r.ret_5d) + '</td>';
         h += '<td class="' + clr(r.ret_20d) + '">' + fmt(r.ret_20d) + '</td>';
         h += '<td class="' + clr(r.ret_1y) + '">' + fmt(r.ret_1y) + '</td>';
         h += '<td>' + r.nav_pct_2y + '%</td>';
-        h += '<td class="' + clr(-r.drawdown) + '">' + fmt(-Math.abs(r.drawdown)) + '</td>';
+        h += '<td class="' + clr(r.drawdown) + '">' + fmt(r.drawdown) + '</td>';
         h += '<td>' + maLabel(r.ma_below) + '</td>';
         h += '<td>' + r.rsi + '</td>';
         h += '<td>' + volLabel(r.volatility) + '</td>';
@@ -386,13 +408,22 @@ function renderAdvice(d) {
                     h += '</div>';
                 }
 
-                // 操作计划
+                // 操作计划（统一层级系统）
                 if (s.action_plan) {
                     h += '<div class="action-plan">';
-                    if (s.action_plan.urgent_actions && s.action_plan.urgent_actions.length > 0) {
-                        h += '<div class="ap-title">立即操作：</div>';
-                        s.action_plan.urgent_actions.forEach(function (a) {
-                            h += '<div class="ap-item"><span class="tag r">' + a.action + '</span> ' + a.reason + '</div>';
+                    var lvlCls = s.action_plan.level === '清仓' ? 'r' : s.action_plan.level === '减仓' ? 'o' : 'y';
+                    h += '<div class="ap-title"><span class="tag ' + lvlCls + '">' + (s.action_plan.level || '') + '</span> 综合评分: ' + (s.sell_score || 0) + '/100';
+                    if (s.action_plan.suggested_sell_pct > 0) {
+                        h += ' — 建议卖出 ' + s.action_plan.suggested_sell_pct + '%';
+                    }
+                    h += '</div>';
+                    if (s.action_plan.action) {
+                        h += '<div class="ap-item"><b>建议操作：</b>' + s.action_plan.action + '</div>';
+                    }
+                    if (s.action_plan.triggered_reasons && s.action_plan.triggered_reasons.length > 0) {
+                        h += '<div class="ap-title">触发原因：</div>';
+                        s.action_plan.triggered_reasons.forEach(function (r) {
+                            h += '<div class="ap-item"><span class="tag o">触发</span> ' + r + '</div>';
                         });
                     }
                     if (s.action_plan.monitor_items && s.action_plan.monitor_items.length > 0) {
@@ -527,18 +558,20 @@ function renderPortfolioList(data) {
     h += '</tr></thead><tbody>';
     data.details.forEach(function (d) {
         h += '<tr>';
-        h += '<td class="code">' + d.code + '</td>';
-        h += '<td class="name" title="' + d.name + '">' + d.name + '</td>';
+        h += '<td class="code clickable" onclick="showDetail(\'' + escAttr(d.code) + '\', \'' + escAttr(d.name) + '\')" title="点击查看详情">' + escHtml(d.code) + '</td>';
+        h += '<td class="name clickable" onclick="showDetail(\'' + escAttr(d.code) + '\', \'' + escAttr(d.name) + '\')" title="点击查看详情">' + escHtml(d.name) + '</td>';
         h += '<td>' + d.buy_date + '</td>';
         h += '<td>' + d.buy_nav + '</td>';
         h += '<td>' + d.current_nav + '</td>';
         h += '<td class="' + (d.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(d.profit_pct) + '</td>';
-        h += '<td><span class="tag">' + d.sector + '</span></td>';
+        h += '<td><span class="tag">' + escHtml(d.sector) + '</span></td>';
         var sa = d.sell_score || 0;
-        var scls = sa >= 60 ? 'r' : sa >= 40 ? 'o' : sa >= 20 ? 'y' : 'g';
-        h += '<td title="卖出紧迫度: ' + sa + '/100"><span class="tag ' + scls + '">' + d.sell_summary + '</span></td>';
-        var ssp = d.suggested_sell_pct || 0;
-        h += '<td><button class="btn-sell-sm" onclick="sellHolding(' + d.id + ',' + d.current_nav + ',\'' + (d.name || '').replace(/'/g, "\\'") + '\',' + ssp + ')">卖出</button> ';
+        var scls = sa >= 70 ? 'r' : sa >= 45 ? 'o' : sa >= 20 ? 'y' : 'g';
+        var suggestedPct = d.suggested_sell_pct || 0;
+        var pctDisplay = suggestedPct > 0 ? '<span class="suggest-pct">建议卖' + suggestedPct + '%</span>' : '';
+        h += '<td title="卖出紧迫度: ' + sa + '/100"><span class="tag ' + scls + '">' + escHtml(d.sell_summary) + '</span> ' + pctDisplay + '</td>';
+        var btnCls = sa >= 70 ? 'btn-sell-urgent' : sa >= 45 ? 'btn-sell-warn' : 'btn-sell-sm';
+        h += '<td><button class="' + btnCls + '" onclick="sellHolding(' + d.id + ',' + d.current_nav + ',\'' + escAttr(d.name) + '\',' + suggestedPct + ',' + sa + ')">卖出</button> ';
         h += '<button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
         h += '</tr>';
     });
@@ -550,40 +583,59 @@ function deleteHolding(id) {
     if (!confirm("确认删除这笔持仓记录？")) return;
     fetch(API + "/portfolio/" + id, { method: "DELETE" })
         .then(function (r) { return r.json(); })
-        .then(function () { loadPortfolio(); loadHistory(); });
+        .then(function (d) {
+            if (d.error) { alert(d.error); return; }
+            loadPortfolio(); loadHistory();
+        });
 }
 
-function sellHolding(id, currentNav, name, suggestedPct) {
-    var tip = suggestedPct && suggestedPct > 0 ? ("\n建议卖出比例: " + suggestedPct + "%") : "";
-    var pctInput = prompt("卖出「" + name + "」" + tip + "\n\n请输入卖出比例（%）：\n100 = 全部卖出 | 50 = 卖一半 | 33 = 卖1/3", suggestedPct || 100);
-    if (pctInput === null || pctInput === "") return;
-    var sellPct = parseFloat(pctInput);
+function sellHolding(id, currentNav, name, suggestedPct, sellScore) {
+    // 单步确认弹窗：一次显示全部信息并确认
+    var pct = suggestedPct > 0 ? suggestedPct : (sellScore >= 70 ? 100 : sellScore >= 45 ? 50 : 30);
+    var msgs = [];
+    if (sellScore >= 70) msgs.push('紧迫度 ' + sellScore + '/100 - 强烈建议清仓');
+    else if (sellScore >= 45) msgs.push('紧迫度 ' + sellScore + '/100 - 建议减仓');
+    else if (sellScore >= 20) msgs.push('紧迫度 ' + sellScore + '/100 - 关注（暂不建议操作）');
+    else msgs.push('卖出紧迫度: ' + (sellScore || 0) + '/100 - 继续持有中');
+
+    var confirmMsg = '卖出「' + name + '」\n\n' +
+        (msgs.length ? msgs.join('\n') + '\n\n' : '') +
+        '卖出比例% (默认净值: ' + currentNav + ')\n' +
+        '如需自定义净值，输入格式: 50@1.2345';
+    var input = prompt(confirmMsg, pct);
+    if (input === null || input === '') return;
+
+    // 解析输入：支持 "50" 或 "50@1.2345" 格式
+    var sellPct, sellNavNum;
+    if (input.indexOf('@') >= 0) {
+        var parts = input.split('@');
+        sellPct = parseFloat(parts[0]);
+        sellNavNum = parseFloat(parts[1]);
+    } else {
+        sellPct = parseFloat(input);
+        sellNavNum = currentNav;
+    }
+
     if (isNaN(sellPct) || sellPct <= 0 || sellPct > 100) {
-        alert("请输入有效的卖出比例 (1-100)");
-        return;
+        alert('请输入有效的卖出比例 (1-100)'); return;
     }
-    var sellNav = prompt("卖出「" + name + "」\n卖出比例: " + sellPct + "%\n\n请输入卖出净值（当前净值：" + currentNav + "）", currentNav);
-    if (sellNav === null || sellNav === "") return;
-    var sellNavNum = parseFloat(sellNav);
     if (isNaN(sellNavNum) || sellNavNum <= 0) {
-        alert("请输入有效的卖出净值");
-        return;
+        alert('请输入有效的卖出净值'); return;
     }
-    fetch(API + "/portfolio/" + id + "/sell", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
+
+    fetch(API + '/portfolio/' + id + '/sell', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sell_nav: sellNavNum, sell_pct: sellPct })
     })
         .then(function (r) { return r.json(); })
         .then(function (data) {
-            if (data.error) {
-                alert(data.error);
-                return;
-            }
-            var resultMsg = sellPct >= 100 ? "已全部卖出 " + data.name : "已卖出 " + data.name + " (" + data.sell_pct + "%)";
-            alert(resultMsg + "\n卖出净值: " + data.sell_nav + "\n盈亏: " + (data.profit >= 0 ? "+" : "") + data.profit + "元 (" + (data.profit_pct >= 0 ? "+" : "") + data.profit_pct + "%)");
-            loadPortfolio();
-            loadHistory();
+            if (data.error) { alert(data.error); return; }
+            var resultMsg = sellPct >= 100 ? '已全部卖出 ' + data.name : '已卖出 ' + data.name + ' (' + data.sell_pct + '%)';
+            alert(resultMsg + '\n卖出净值: ' + data.sell_nav +
+                '\n盈亏: ' + (data.profit >= 0 ? '+' : '') + data.profit + '元 (' +
+                (data.profit_pct >= 0 ? '+' : '') + data.profit_pct + '%)');
+            loadPortfolio(); loadHistory();
         });
 }
 
@@ -607,8 +659,8 @@ function renderHistory(data) {
     h += '</tr></thead><tbody>';
     data.history.forEach(function (d) {
         h += '<tr>';
-        h += '<td class="code">' + d.code + '</td>';
-        h += '<td class="name" title="' + d.name + '">' + d.name + '</td>';
+        h += '<td class="code clickable" onclick="showDetail(\'' + escAttr(d.code) + '\', \'' + escAttr(d.name) + '\')" title="点击查看详情">' + escHtml(d.code) + '</td>';
+        h += '<td class="name clickable" onclick="showDetail(\'' + escAttr(d.code) + '\', \'' + escAttr(d.name) + '\')" title="点击查看详情">' + escHtml(d.name) + '</td>';
         h += '<td>' + d.buy_date + '</td>';
         h += '<td>' + d.buy_nav + '</td>';
         h += '<td>' + d.sell_date + '</td>';
@@ -691,7 +743,7 @@ document.getElementById("hf-save").onclick = function () {
           document.getElementById("add-holding-btn").style.display = "";
           clearHoldingForm();
           loadPortfolio();
-      });
+      }).catch(function (e) { alert("保存失败: " + e.message); });
 };
 
 function clearHoldingForm() {
@@ -713,6 +765,7 @@ function addHoldingQuick(code) {
 }
 
 // 持仓自动加载
+var _heldCodes = [];
 loadPortfolio();
 loadHistory();
 load(false);

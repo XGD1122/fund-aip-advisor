@@ -14,13 +14,13 @@ from engine.indicators import (
     calc_period_return_from_returns,
     calc_nav_percentile, calc_ma_deviation_multi, calc_sharpe,
 )
+from config import FUND_TYPE_FILTER, RISK_FREE_RATE
 from data.fetcher import fetch_fund_nav
 from data.cleaner import clean_nav_data, save_nav_data
 
 FLAT_LINE_THRESHOLD = 0.0001
 PROFITABILITY_1Y_MIN = 0.02
 FREEFALL_60D = 0.30
-FUND_TYPE_FILTER = "指数型"
 MIN_DATA_DAYS = 252          # 最少1年数据
 MIN_VALUATION_DAYS = 504     # 估值分位满分所需最少交易日（2年）
 
@@ -39,7 +39,7 @@ SECTOR_KEYWORDS = {
 
 
 def compute_top20() -> list:
-    """主入口：按大师规则选出最值得买入的20只A类指数基金"""
+    """主入口：按大师规则选出最值得买入的20只指数基金（排除C/E类收费份额）"""
     conn = get_connection()
 
     candidates = _get_a_class_candidates(conn)
@@ -75,7 +75,9 @@ def compute_top20() -> list:
         r2y = calc_period_return_from_returns(rets, 504) if n >= 504 else r1y
 
         if r1y < PROFITABILITY_1Y_MIN:
-            continue
+            # 软惩罚而非硬排除：深度价值买点常在1年负收益后出现
+            # r1y会在_score_master中触发额外扣分
+            pass
 
         sig = signals[code]
         s = _score_master(rets, r5, r10, r20, r60, r1y, r2y, sig, c)
@@ -110,9 +112,13 @@ def compute_top20() -> list:
 # ============================================================
 
 def _get_a_class_candidates(conn) -> list:
+    """获取候选基金：排除C类/E类份额（底层资产相同，仅费率不同），保留A类+无后缀等"""
     rows = conn.execute("""
         SELECT code, name, fund_type FROM fund_basic
-        WHERE fund_type LIKE ? AND (name LIKE '%A' OR name LIKE '%A类')
+        WHERE fund_type LIKE ?
+          AND name NOT LIKE '%C'
+          AND name NOT LIKE '%C类%'
+          AND name NOT LIKE '%E'
     """, (FUND_TYPE_FILTER + "%",)).fetchall()
     return [dict(r) for r in rows]
 
@@ -247,27 +253,37 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
     bb_lower = sig.get("bb_lower", 0) or 0
     bb_width_val = sig.get("bb_width", 0) or 0
 
-    # 布林带位置评估
-    bb_score = _score_bollinger(price, bb_upper, bb_mid, bb_lower, bb_width_val)
+    # 布林带位置评估（使用实际净值而非复合价格序列）
+    current_nav_sig = float(sig.get("unit_nav", 0) or 0)
+    bb_score = _score_bollinger_nav(current_nav_sig, bb_upper, bb_mid, bb_lower, bb_width_val)
     t_score = _score_technical(rsi, dif, dea, hist, kdj_k, kdj_d, kdj_j, bb_score)  # 0-15
 
     score = v_score + ma_score + dd_score + q_score + t_score
 
-    # === 波动率调整因子 ===
+    # === 波动率调整因子（仅极端高波动打折） ===
     annual_vol = float(rets.std() * np.sqrt(252)) if len(rets) >= 60 else 0
-    if annual_vol > 0.40:
-        score *= 0.80   # 高波动基金，风险打折
-    elif annual_vol > 0.25:
-        score *= 0.90   # 中等波动
+    if annual_vol > 0.50:
+        score *= 0.85   # 极高波动打折（质量评分中已有波动率考量，这里只做极端调整）
+    elif annual_vol > 0.40:
+        score *= 0.92
 
-    # 崩盘惩罚：60日跌幅 > 30%
+    # 崩盘折扣：60日跌幅 > 30%（保留深跌反弹机会，但需防范趋势性下跌）
     if r60 < -FREEFALL_60D:
-        score *= 0.3
+        score *= 0.65   # 显著折扣但不完全排除（深跌往往伴随高弹性和高不确定性）
 
-    # 追高风险：1年涨幅 > 25%
+    # 弱收益惩罚：1年收益<2%的基金虽然不排除，但额外扣分
+    # 真正"别人恐惧时贪婪"的买点：估值低+近期跌+1年负收益=极佳入场时机
+    if r1y < PROFITABILITY_1Y_MIN:
+        score -= 8.0   # 软惩罚，让深度价值标的也能上榜（需在其他维度表现出色）
+
+    # 追高惩罚：1年涨幅 > 25%，需对称性风险约束
     warning = ""
-    if r1y > 0.25:
-        warning = "追高风险: 近1年涨幅过大"
+    if r1y > 0.35:
+        score *= 0.75   # 涨幅超35%，追高风险显著
+        warning = "追高风险: 近1年涨幅>35%"
+    elif r1y > 0.25:
+        score *= 0.88   # 温和追高折扣
+        warning = "追高风险: 近1年涨幅>25%"
     elif nav_pct <= 0.2 and ma_below >= 2:
         warning = "低估值+均线支撑"
     elif kdj_j < 0:
@@ -278,7 +294,7 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
     # 连续下跌天数
     raw = rets.values
     cd = 0
-    for i in range(len(raw) - 1, max(0, len(raw) - 30), -1):
+    for i in range(len(raw) - 1, max(-1, len(raw) - 31), -1):
         if raw[i] < 0:
             cd += 1
         else:
@@ -292,10 +308,10 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
         "ma_below": ma_below,
         "warning": warning,
         "volatility": round(annual_vol * 100, 1),
-        "bb_position": "下轨" if bb_lower > 0 and float(price.iloc[-1]) <= bb_lower * 1.02 else
-                       "下轨附近" if bb_lower > 0 and float(price.iloc[-1]) <= bb_lower * 1.05 else
-                       "中轨下方" if bb_mid > 0 and float(price.iloc[-1]) < bb_mid else
-                       "中轨上方" if bb_mid > 0 else "",
+        "bb_position": "下轨" if bb_lower > 0 and current_nav_sig > 0 and current_nav_sig <= bb_lower * 1.02 else
+                       "下轨附近" if bb_lower > 0 and current_nav_sig > 0 and current_nav_sig <= bb_lower * 1.05 else
+                       "中轨下方" if bb_mid > 0 and current_nav_sig > 0 and current_nav_sig < bb_mid else
+                       "中轨上方" if bb_mid > 0 and current_nav_sig > 0 else "",
     }
 
 
@@ -383,27 +399,29 @@ def _score_ma_system(ma_dev: dict, ma60_slope: float = 0) -> tuple:
     elif ma60_slope > 0:
         score += 1.0    # 均线走平
 
-    return score, below
+    return min(25.0, score), below
 
 
 # === 2.5 布林带位置 (整合进技术分前独立计算) ===
 
-def _score_bollinger(price: pd.Series, bb_upper: float, bb_mid: float, bb_lower: float,
-                     bb_width_val: float = 0) -> float:
-    """布林带位置评分 (0-5)，整合入技术分"""
-    current = float(price.iloc[-1])
+def _score_bollinger_nav(current_nav: float, bb_upper: float, bb_mid: float, bb_lower: float,
+                         bb_width_val: float = 0) -> float:
+    """布林带买入评分 (0-5)：越低越加分（一致的反向投资逻辑）"""
     score = 0.0
+    if current_nav <= 0 or bb_lower <= 0 or bb_mid <= 0:
+        return score
 
-    if bb_lower > 0 and current <= bb_lower * 1.02:
-        score += 3.0   # 触及/跌破下轨 → 超卖反弹机会
-    elif bb_lower > 0 and current <= bb_lower * 1.05:
-        score += 2.0   # 接近下轨
-    elif bb_mid > 0 and current < bb_mid:
-        score += 1.0   # 中轨下方，偏弱
-    elif bb_mid > 0 and current > bb_mid:
-        score += 2.0   # 突破中轨，趋势转强
+    # 核心逻辑：价格越接近/跌破下轨，买入越划算
+    if current_nav <= bb_lower:
+        score += 4.0   # 跌破下轨 → 深度超卖，反弹概率高
+    elif current_nav <= bb_lower * 1.03:
+        score += 3.0   # 紧贴下轨 → 超卖区域
+    elif current_nav <= bb_lower * 1.08:
+        score += 2.0   # 下轨附近 → 偏低估
+    elif current_nav < bb_mid:
+        score += 1.0   # 中轨下方 → 偏弱
 
-    # 带宽收缩加成（预示变盘）
+    # 带宽收缩加成（预示变盘，双向可能）
     if bb_width_val > 0 and bb_width_val < 0.03:
         score += 1.0   # 带宽极窄，即将变盘
 
@@ -414,40 +432,61 @@ def _score_bollinger(price: pd.Series, bb_upper: float, bb_mid: float, bb_lower:
 
 def _score_drawdown(price: pd.Series) -> tuple:
     """
-    回撤买入法：从1年高点回撤越多，买入越有利
+    回撤买入法：双窗口评估（1年+2年），综合判断打折程度
     巴菲特：别人恐惧时贪婪
     """
     n = len(price)
-    window = min(252, n)  # 1年
-    peak = price.tail(window).max()
-    current = price.iloc[-1]
-    dd = float((current - peak) / peak)  # 负值表示回撤
 
-    if dd <= -0.30:
-        score = 20.0   # 大跌30%+ → 极度恐惧 → 重仓机会
-    elif dd <= -0.20:
-        score = 18.0   # 跌20-30% → 深度回调
-    elif dd <= -0.15:
-        score = 15.0   # 跌15-20% → 明显回调
-    elif dd <= -0.10:
-        score = 12.0   # 跌10-15% → 正常回调
-    elif dd <= -0.05:
-        score = 8.0    # 温和回调
-    elif dd <= 0:
-        score = 4.0    # 横盘或微跌
+    # 1年窗口回撤 (12分)
+    win1y = min(252, n)
+    peak1y = price.tail(win1y).max()
+    dd1y = float((price.iloc[-1] - peak1y) / peak1y)
+
+    if dd1y <= -0.30:
+        score1y = 12.0
+    elif dd1y <= -0.20:
+        score1y = 10.0
+    elif dd1y <= -0.15:
+        score1y = 8.0
+    elif dd1y <= -0.10:
+        score1y = 6.0
+    elif dd1y <= -0.05:
+        score1y = 4.0
+    elif dd1y < 0:
+        score1y = 1.0   # 轻微回撤
     else:
-        score = 1.0    # 创新高 → 不建议追
+        score1y = 0.0   # 无回撤或新高，不奖励
 
-    return dd, score
+    # 2年窗口回撤 (8分) — 捕捉更深层打折机会
+    if n >= 504:
+        win2y = min(504, n)
+        peak2y = price.tail(win2y).max()
+        dd2y = float((price.iloc[-1] - peak2y) / peak2y)
+        if dd2y <= -0.35:
+            score2y = 8.0
+        elif dd2y <= -0.25:
+            score2y = 6.0
+        elif dd2y <= -0.15:
+            score2y = 4.0
+        elif dd2y <= -0.05:
+            score2y = 2.0
+        else:
+            score2y = 1.0
+        dd = dd2y if dd2y < dd1y else dd1y  # 取更深的回撤作为展示
+    else:
+        score2y = 0
+        dd = dd1y
+
+    return dd, score1y + score2y
 
 
 # === 4. 质量保障 (0-15) ===
 
 def _score_quality(basic: dict, returns: pd.Series) -> float:
-    """排除价值陷阱：便宜但基本面差的基金要扣分"""
+    """排除价值陷阱：便宜但基本面差的基金要扣分（含跟踪误差评估）"""
     score = 0.0
 
-    # 基金年限 (5分)
+    # 基金年限 (4分)
     est = basic.get("establish_date", "")
     try:
         d = datetime.strptime(str(est)[:10], "%Y-%m-%d")
@@ -455,42 +494,58 @@ def _score_quality(basic: dict, returns: pd.Series) -> float:
     except Exception:
         age = 1
     if age >= 5:
-        score += 5.0
-    elif age >= 3:
         score += 4.0
+    elif age >= 3:
+        score += 3.0
     elif age >= 1:
         score += 2.0
     else:
         score += 1.0
 
-    # 规模 (5分)
+    # 规模 (4分)
     scale = basic.get("scale", 0) or 0
     if scale:
         s = float(scale) / 1e8
         if 5 <= s <= 50:
-            score += 5.0
-        elif 2 <= s < 5 or s > 50:
-            score += 3.0
-        else:
-            score += 2.0
-    else:
-        score += 2.5
-
-    # 夏普比率 (5分)
-    if len(returns) >= 252:
-        sh = calc_sharpe(returns=returns, risk_free=0.025)
-        if sh > 0.8:
-            score += 5.0
-        elif sh > 0.5:
             score += 4.0
-        elif sh > 0.2:
+        elif 2 <= s < 5 or s > 50:
+            score += 2.5
+        else:
+            score += 1.5
+    else:
+        score += 2.0
+
+    # 夏普比率 (4分)
+    if len(returns) >= 252:
+        sh = calc_sharpe(returns=returns, risk_free=RISK_FREE_RATE)
+        if sh > 0.8:
+            score += 4.0
+        elif sh > 0.5:
             score += 3.0
-        elif sh > 0:
+        elif sh > 0.2:
             score += 2.0
+        elif sh > 0:
+            score += 1.0
         else:
             score += 0.0   # 负夏普 → 亏钱基金
     else:
-        score += 2.5
+        score += 1.5
+
+    # 波动率评估（指数基金核心质量指标，3分）
+    # 注：理想情况下应使用跟踪误差(fund_ret - benchmark_ret)，此处用年化波动率近似
+    # 低波动→紧密跟踪或稳定增长；高波动→跟踪偏差大或策略激进
+    if len(returns) >= 60:
+        annual_vol = float(returns.std() * np.sqrt(252))
+        if annual_vol < 0.15:
+            score += 3.0   # 低波动，紧密跟踪
+        elif annual_vol < 0.22:
+            score += 2.0   # 中等波动
+        elif annual_vol < 0.30:
+            score += 1.0   # 偏高
+        else:
+            score += 0.0   # 高波动=跟踪效果差
+    else:
+        score += 1.0
 
     return score
 
@@ -503,15 +558,17 @@ def _score_technical(rsi: float, dif: float, dea: float, hist: float,
     """底部技术信号 (0-15)：RSI超卖 + MACD拐头 + KDJ + 布林带"""
     score = 0.0
 
-    # RSI (6分) — 保持原有逻辑
+    # RSI (6分) — 平滑过渡，避免断崖式跳变
     if 30 <= rsi <= 40:
         score += 6.0   # 超卖黄金区
+    elif 25 <= rsi < 30:
+        score += 4.0   # 深度超卖（存在继续下跌风险，但机会大于风险）
+    elif rsi < 25:
+        score += 2.5   # 极度超卖 → 可能有雷，仅保留基础分
     elif 40 < rsi <= 45:
         score += 4.5   # 偏弱
     elif 45 < rsi <= 50:
         score += 3.0   # 中性偏低
-    elif rsi < 30:
-        score += 3.0   # 极度超卖 → 可能有雷
     elif 50 < rsi <= 60:
         score += 2.0
     else:
@@ -522,7 +579,7 @@ def _score_technical(rsi: float, dif: float, dea: float, hist: float,
         score += 2.0   # 金叉
         if hist > 0:
             score += 2.0  # 柱线转正 → 动能确认
-    elif dif < dea and dif > dea * 1.05:  # 接近金叉
+    elif dif < dea and abs(dea) > 0.001 and abs(dif - dea) / max(abs(dea), 0.001) < 0.05:  # 接近金叉（5%以内，防除零）
         score += 1.0
 
     # KDJ (3分) — 新增
@@ -554,8 +611,8 @@ def refresh_all_data():
     stale = conn.execute("""
         SELECT b.code FROM fund_basic b
         WHERE b.fund_type LIKE ?
-        AND (SELECT MAX(date) FROM fund_nav WHERE code=b.code) < ?
-        OR NOT EXISTS (SELECT 1 FROM fund_nav WHERE code=b.code)
+        AND ((SELECT MAX(date) FROM fund_nav WHERE code=b.code) < ?
+             OR NOT EXISTS (SELECT 1 FROM fund_nav WHERE code=b.code))
     """, (FUND_TYPE_FILTER + "%", yesterday)).fetchall()
     conn.close()
 
@@ -586,7 +643,10 @@ def refresh_all_data():
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(_fetch_one, code) for code in stale_codes]
         for f in as_completed(futures):
-            pass
+            try:
+                f.result()
+            except Exception as e:
+                print(f"  thread error: {e}", flush=True)
 
     print(f"  NAV done: {fetched[0]}/{len(stale_codes)}", flush=True)
     update_signals()
@@ -598,11 +658,11 @@ def refresh_daily():
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = get_connection()
-    # 只找净值落后的A类指数基金（Top20只需要A类）
+    # 找净值落后的指数基金（排除C/E类收费份额）
     stale = conn.execute("""
         SELECT b.code FROM fund_basic b
         WHERE b.fund_type LIKE ?
-        AND (b.name LIKE '%A' OR b.name LIKE '%A类')
+        AND b.name NOT LIKE '%C' AND b.name NOT LIKE '%C类%' AND b.name NOT LIKE '%E'
         AND (SELECT MAX(date) FROM fund_nav WHERE code=b.code) < ?
     """, (FUND_TYPE_FILTER + "%", yesterday)).fetchall()
     conn.close()
@@ -617,11 +677,14 @@ def refresh_daily():
 
     # V8 引擎单线程，直接顺序拉取（不需要线程池）
     for i, code in enumerate(stale_codes):
-        df = fetch_fund_nav(code)
-        if not df.empty:
-            df = clean_nav_data(df)
-            save_nav_data(df)
-            updated_codes.append(code)
+        try:
+            df = fetch_fund_nav(code)
+            if not df.empty:
+                df = clean_nav_data(df)
+                save_nav_data(df)
+                updated_codes.append(code)
+        except Exception as e:
+            print(f"  fetch error [{code}]: {e}", flush=True)
         if (i + 1) % 200 == 0:
             print(f"  {i+1}/{len(stale_codes)}", flush=True)
 
@@ -634,10 +697,10 @@ def refresh_daily():
 
 
 def update_signals():
-    """全量更新A类基金信号（初始化和全量刷新用）"""
+    """全量更新指数基金信号（排除C/E类收费份额）"""
     conn = get_connection()
     codes = [r["code"] for r in conn.execute(
-        "SELECT code FROM fund_basic WHERE fund_type LIKE ? AND (name LIKE '%A' OR name LIKE '%A类')",
+        "SELECT code FROM fund_basic WHERE fund_type LIKE ? AND name NOT LIKE '%C' AND name NOT LIKE '%C类%' AND name NOT LIKE '%E'",
         (FUND_TYPE_FILTER + "%",)
     ).fetchall()]
     conn.close()
@@ -645,22 +708,33 @@ def update_signals():
 
 
 def _update_signals_for_codes(codes: list):
-    """只更新指定基金列表的信号（增量更新）"""
+    """批量更新信号（优化版：单连接 + 批量预读NAV）"""
     total = len(codes)
+    conn = get_connection()
+
     for i, code in enumerate(codes):
-        df = _calc_signals_for_fund(code)
+        # 直接在此处读取NAV，复用同一个连接
+        rows = conn.execute(
+            "SELECT date, unit_nav, daily_return FROM fund_nav WHERE code=? ORDER BY date",
+            (code,)
+        ).fetchall()
+        if len(rows) < 20:
+            continue
+
+        df = _calc_signals_from_rows(rows)
         if df.empty:
             continue
-        conn = get_connection()
+
         last = df.iloc[-1]
         try:
             conn.execute("""
                 INSERT OR REPLACE INTO fund_signal
-                (code, date, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14,
+                (code, date, unit_nav, ma5, ma20, ma60, ma120, macd_dif, macd_dea, macd_hist, rsi14,
                  bb_upper, bb_mid, bb_lower, kdj_k, kdj_d, kdj_j, bb_width, atr14, ma60_slope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 code, str(last["date"]),
+                float(last.get("unit_nav", 0) or 0),
                 float(last.get("ma5", 0) or 0), float(last.get("ma20", 0) or 0),
                 float(last.get("ma60", 0) or 0), float(last.get("ma120", 0) or 0),
                 float(last.get("macd_dif", 0) or 0), float(last.get("macd_dea", 0) or 0),
@@ -674,28 +748,22 @@ def _update_signals_for_codes(codes: list):
             ))
         except Exception as e:
             print(f"  signal insert error [{code}]: {e}")
-        conn.commit()
-        conn.close()
+
         if (i + 1) % 500 == 0:
             print(f"  signals: {i + 1}/{total}")
+            conn.commit()
+
+    conn.commit()
+    conn.close()
     print(f"Signals done: {total}")
 
 
-def _calc_signals_for_fund(code: str) -> pd.DataFrame:
+def _calc_signals_from_rows(rows: list) -> pd.DataFrame:
+    """从已加载的净值行计算技术指标（无数据库IO）"""
     from engine.indicators import (
         calc_ma, calc_macd, calc_rsi, calc_bollinger,
         calc_kdj, calc_atr, calc_bb_width,
     )
-
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT date, unit_nav, daily_return FROM fund_nav WHERE code=? ORDER BY date",
-        (code,)
-    ).fetchall()
-    conn.close()
-
-    if len(rows) < 20:
-        return pd.DataFrame()
 
     df = pd.DataFrame(rows, columns=["date", "unit_nav", "daily_return"])
     df["unit_nav"] = pd.to_numeric(df["unit_nav"], errors="coerce")
@@ -719,7 +787,6 @@ def _calc_signals_for_fund(code: str) -> pd.DataFrame:
     df["bb_mid"] = bb["bb_mid"]
     df["bb_lower"] = bb["bb_lower"]
 
-    # 新增指标
     kdj = calc_kdj(nav, 9, 3, 3)
     df["kdj_k"] = kdj["kdj_k"]
     df["kdj_d"] = kdj["kdj_d"]
@@ -728,9 +795,23 @@ def _calc_signals_for_fund(code: str) -> pd.DataFrame:
     df["atr14"] = calc_atr(nav, 14)
     df["bb_width"] = calc_bb_width(nav, 20)
 
-    # MA60 斜率（近20日变化率）
     ma60_s = calc_ma(nav, 60)
     df["ma60_slope"] = ma60_s.diff(20) / ma60_s.shift(20).replace(0, np.nan)
     df["ma60_slope"] = df["ma60_slope"].fillna(0)
 
     return df
+
+
+def _calc_signals_for_fund(code: str) -> pd.DataFrame:
+    """计算单只基金的信号（独立调用用，打开自己的连接）"""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT date, unit_nav, daily_return FROM fund_nav WHERE code=? ORDER BY date",
+        (code,)
+    ).fetchall()
+    conn.close()
+
+    if len(rows) < 20:
+        return pd.DataFrame()
+
+    return _calc_signals_from_rows(rows)

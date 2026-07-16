@@ -64,7 +64,7 @@ tr:hover{background:#fafafa}
 /* CSS变量用于图表 */
 :root{--c-up:#e15241;--c-border:#e8e8e8;--c-text:#888}
 
-@media (max-width:768px){.chart-row{flex-direction:column}.stat-grid{grid-template-columns:repeat(3,1fr)}.modal-panel{width:96%}}
+@media (max-width:768px){.chart-row{flex-direction:column}.stat-grid{grid-template-columns:repeat(3,1fr)}.modal-panel{width:96%}.summary-cards{grid-template-columns:repeat(2,1fr)}.form-row{flex-direction:column}.tech-grid{grid-template-columns:repeat(2,1fr)}}
 
 /* 持仓面板 */
 .portfolio-section{max-width:1500px;margin:24px auto;padding:0 16px}
@@ -77,6 +77,13 @@ tr:hover{background:#fafafa}
 .btn-ghost-sm:hover{background:#ffebee;color:#c62828;border-color:#f44336}
 .btn-sell-sm{padding:2px 8px;font-size:10px;background:#4caf50;color:#fff;border:1px solid #4caf50;border-radius:3px;cursor:pointer}
 .btn-sell-sm:hover{background:#388e3c}
+.btn-sell-warn{padding:2px 8px;font-size:10px;background:#ff9800;color:#fff;border:1px solid #ff9800;border-radius:3px;cursor:pointer;animation:pulse-warn 2s infinite}
+.btn-sell-warn:hover{background:#f57c00}
+.btn-sell-urgent{padding:2px 8px;font-size:10px;background:#f44336;color:#fff;border:1px solid #f44336;border-radius:3px;cursor:pointer;animation:pulse-urgent 1.5s infinite}
+.btn-sell-urgent:hover{background:#c62828}
+@keyframes pulse-urgent{0%,100%{box-shadow:0 0 0 0 rgba(244,67,54,.4)}50%{box-shadow:0 0 0 3px rgba(244,67,54,.1)}}
+@keyframes pulse-warn{0%,100%{box-shadow:0 0 0 0 rgba(255,152,0,.4)}50%{box-shadow:0 0 0 2px rgba(255,152,0,.1)}}
+.suggest-pct{font-size:10px;padding:1px 5px;background:#fff3e0;color:#e65100;border-radius:3px;margin-left:4px}
 .portfolio-history{margin-top:18px;padding-top:16px;border-top:2px solid #e0e0e0}
 .portfolio-history h3{font-size:13px;color:#666;margin-bottom:10px}
 
@@ -119,7 +126,6 @@ tr:hover{background:#fafafa}
 .advice-body p{margin-bottom:3px}
 .advice-body .risk{color:#e65100;background:#fff3e0;padding:4px 8px;border-radius:4px;margin-top:4px}
 
-@media (max-width:768px){.summary-cards{grid-template-columns:repeat(2,1fr)}.form-row{flex-direction:column}}
 
 /* 技术指标仪表盘 */
 .detail-technicals{margin-top:12px;border-top:1px solid #eee;padding-top:12px}
@@ -156,4 +162,4 @@ tr:hover{background:#fafafa}
 .sbar-item.warn{background:#ffebee;color:#c62828}
 .sbar-item.warn b{color:#b71c1c}
 
-@media (max-width:768px){.tech-grid{grid-template-columns:repeat(2,1fr)}.summary-cards{grid-template-columns:repeat(2,1fr)}.form-row{flex-direction:column}}
+

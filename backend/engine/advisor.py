@@ -12,13 +12,14 @@ from engine.indicators import (
     calc_nav_percentile, calc_period_return_from_returns,
     calc_volatility, calc_sharpe, calc_calmar, calc_max_drawdown_full,
     detect_macd_divergence, detect_rsi_divergence,
+    calc_macd, calc_rsi,
 )
-from engine.top20 import _identify_sector, SECTOR_KEYWORDS
+from engine.top20 import _identify_sector
 
 
 def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> dict:
     """
-    8维卖出信号体系（专业增强版）：
+    9维卖出信号体系（专业增强版）：
     1. 目标止盈 — 固定收益率触发
     2. 移动止盈 — 阶梯式回撤保护（根据浮盈幅度动态调整）
     3. 估值退出 — NAV分位过高触发
@@ -58,8 +59,8 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
 
     signals = []
     sell_score = 0  # 综合卖出紧迫度 0-100
-    urgent_actions = []
     monitor_items = []
+    triggered_reasons = []  # 记录触发卖出的原因，用于统一决策
 
     # 提取技术指标
     rsi = float(sig_row["rsi14"]) if sig_row and sig_row["rsi14"] else 50
@@ -96,47 +97,64 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
             pass
 
     # ================================================================
-    # 维度1: 目标止盈
+    # 维度1: 目标止盈（持有期调整版：持有越久，止盈阈值越高）
     # ================================================================
     if profit_pct is not None and profit_pct > 0:
-        if profit_pct >= 0.50:
+        # 持有期调整系数：持有<90天=1.0(严格)，90~365天=1.2(适中)，>365天=1.5(宽容)
+        if holding_days is not None:
+            if holding_days < 90:
+                adj = 1.0
+            elif holding_days < 365:
+                adj = 1.2
+            else:
+                adj = 1.5
+        else:
+            adj = 1.0
+
+        adj_50 = 0.50 * adj
+        adj_30 = 0.30 * adj
+        adj_20 = 0.20 * adj
+        adj_15 = 0.15 * adj
+
+        if profit_pct >= adj_50:
             signals.append({"type": "目标止盈", "level": 3, "icon": "🔴", "weight": 30,
-                "msg": f"浮盈 {profit_pct*100:.1f}%，超过50%极端止盈线，建议全部清仓"})
+                "msg": f"浮盈 {profit_pct*100:.1f}%（持有{holding_days or '?'}天），超过{adj_50*100:.0f}%极端止盈线"})
             sell_score += 30
-            urgent_actions.append({"action": "全部清仓", "reason": f"浮盈{profit_pct*100:.0f}%触发50%极端止盈线", "pct": 100})
-        elif profit_pct >= 0.30:
-            signals.append({"type": "目标止盈", "level": 3, "icon": "🔴", "weight": 30,
-                "msg": f"浮盈 {profit_pct*100:.1f}%，超过30%止盈线，卖出2/3，剩余用移动止盈保护"})
-            sell_score += 30
-            urgent_actions.append({"action": "卖出2/3仓位", "reason": f"浮盈{profit_pct*100:.0f}%触发30%止盈线", "pct": 67})
-            monitor_items.append("剩余1/3仓位设置移动止盈：从最高点回撤20%即清仓")
-        elif profit_pct >= 0.20:
-            signals.append({"type": "目标止盈", "level": 2, "icon": "🟠", "weight": 20,
-                "msg": f"浮盈 {profit_pct*100:.1f}%，超过20%止盈线，建议卖出1/2"})
-            sell_score += 20
-            urgent_actions.append({"action": "卖出1/2仓位", "reason": f"浮盈{profit_pct*100:.0f}%触发20%止盈线", "pct": 50})
-        elif profit_pct >= 0.15:
+            triggered_reasons.append(f"浮盈{profit_pct*100:.0f}%触发{adj_50*100:.0f}%止盈线")
+        elif profit_pct >= adj_30:
+            signals.append({"type": "目标止盈", "level": 3, "icon": "🔴", "weight": 25,
+                "msg": f"浮盈 {profit_pct*100:.1f}%，超过{adj_30*100:.0f}%止盈线"})
+            sell_score += 25
+            triggered_reasons.append(f"浮盈{profit_pct*100:.0f}%触发{adj_30*100:.0f}%止盈线")
+        elif profit_pct >= adj_20:
+            signals.append({"type": "目标止盈", "level": 2, "icon": "🟠", "weight": 18,
+                "msg": f"浮盈 {profit_pct*100:.1f}%，超过{adj_20*100:.0f}%止盈线"})
+            sell_score += 18
+            triggered_reasons.append(f"浮盈{profit_pct*100:.0f}%触发{adj_20*100:.0f}%止盈线")
+        elif profit_pct >= adj_15:
             signals.append({"type": "目标止盈", "level": 1, "icon": "🟡", "weight": 10,
-                "msg": f"浮盈 {profit_pct*100:.1f}%，达到15%止盈线，建议卖出1/3锁定利润"})
+                "msg": f"浮盈 {profit_pct*100:.1f}%，达到{adj_15*100:.0f}%止盈线，关注锁利时机"})
             sell_score += 10
-            urgent_actions.append({"action": "卖出1/3仓位", "reason": f"浮盈{profit_pct*100:.0f}%触发15%止盈线", "pct": 33})
+            triggered_reasons.append(f"浮盈{profit_pct*100:.0f}%触发{adj_15*100:.0f}%止盈线")
 
     # ================================================================
-    # 维度2: 阶梯式移动止盈（替代简单回撤止损）
+    # 维度2: 阶梯式移动止盈（降低激活门槛+收紧允许回撤）
     # ================================================================
-    if profit_pct is not None and profit_pct > 0.05 and buy_date and buy_nav and buy_nav > 0:
+    if profit_pct is not None and profit_pct > 0.03 and buy_date and buy_nav and buy_nav > 0:
         buy_idx = df[df["date"] >= buy_date].index
         if len(buy_idx) > 0:
             peak_nav = float(nav.iloc[buy_idx[0]:].max())
             dd_from_peak = (current_nav - peak_nav) / peak_nav
 
-            # 根据浮盈幅度确定允许回撤比例
+            # 根据浮盈幅度确定允许回撤比例（盈越多，止盈越紧）
             if profit_pct >= 0.30:
-                allowed_dd = 0.20
+                allowed_dd = 0.15   # 高利润时收紧止盈
             elif profit_pct >= 0.20:
-                allowed_dd = 0.30
+                allowed_dd = 0.20
             elif profit_pct >= 0.10:
-                allowed_dd = 0.40
+                allowed_dd = 0.28
+            elif profit_pct >= 0.05:
+                allowed_dd = 0.35
             else:
                 allowed_dd = 0.50
 
@@ -145,19 +163,19 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
             if actual_dd_ratio >= 1.0:  # 回撤超过允许比例
                 if profit_pct >= 0.20:
                     signals.append({"type": "移动止盈", "level": 3, "icon": "🔴", "weight": 25,
-                        "msg": f"从高点回撤{abs(dd_from_peak)*100:.1f}%，超过允许回撤{allowed_dd*100:.0f}%，建议全部清仓"})
+                        "msg": f"从高点回撤{abs(dd_from_peak)*100:.1f}%，超过允许回撤{allowed_dd*100:.0f}%"})
                     sell_score += 25
-                    urgent_actions.append({"action": "全部清仓", "reason": f"移动止盈: 回撤{abs(dd_from_peak)*100:.1f}%超过允许值{allowed_dd*100:.0f}%", "pct": 100})
+                    triggered_reasons.append(f"移动止盈: 回撤{abs(dd_from_peak)*100:.1f}%超过允许值{allowed_dd*100:.0f}%")
                 elif profit_pct >= 0.10:
                     signals.append({"type": "移动止盈", "level": 2, "icon": "🟠", "weight": 20,
-                        "msg": f"从高点回撤{abs(dd_from_peak)*100:.1f}%，超过允许回撤{allowed_dd*100:.0f}%，建议卖出1/2锁利"})
+                        "msg": f"从高点回撤{abs(dd_from_peak)*100:.1f}%，超过允许回撤{allowed_dd*100:.0f}%，注意锁利"})
                     sell_score += 20
-                    urgent_actions.append({"action": "卖出1/2仓位", "reason": f"移动止盈触发: 回撤超过允许值", "pct": 50})
+                    triggered_reasons.append(f"移动止盈: 回撤超过允许值")
                 else:
                     signals.append({"type": "移动止盈", "level": 1, "icon": "🟡", "weight": 10,
-                        "msg": f"从高点回撤{abs(dd_from_peak)*100:.1f}%，超过允许值，建议卖出1/3保本"})
+                        "msg": f"从高点回撤{abs(dd_from_peak)*100:.1f}%，超过允许值，考虑保本"})
                     sell_score += 10
-                    urgent_actions.append({"action": "卖出1/3仓位", "reason": f"移动止盈: 保本锁定", "pct": 33})
+                    triggered_reasons.append(f"移动止盈: 保本锁定")
             elif actual_dd_ratio >= 0.5:
                 monitor_items.append(f"移动止盈关注: 当前回撤{abs(dd_from_peak)*100:.1f}%，接近允许值{allowed_dd*100:.0f}%的一半")
 
@@ -166,19 +184,19 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
     # ================================================================
     if nav_pct > 0.90:
         signals.append({"type": "估值退出", "level": 3, "icon": "🔴", "weight": 20,
-            "msg": f"NAV分位{nav_pct*100:.0f}%，极度高估(>90%)，建议全部清仓"})
+            "msg": f"NAV分位{nav_pct*100:.0f}%，极度高估(>90%)"})
         sell_score += 20
-        urgent_actions.append({"action": "全部清仓", "reason": f"估值分位{nav_pct*100:.0f}%触发>90%清仓线", "pct": 100})
+        triggered_reasons.append(f"估值分位{nav_pct*100:.0f}%触发>90%清仓线")
     elif nav_pct > 0.80:
         signals.append({"type": "估值退出", "level": 2, "icon": "🟠", "weight": 15,
-            "msg": f"NAV分位{nav_pct*100:.0f}%，高估(80-90%)，建议卖出1/2"})
+            "msg": f"NAV分位{nav_pct*100:.0f}%，高估(80-90%)"})
         sell_score += 15
-        urgent_actions.append({"action": "卖出1/2仓位", "reason": f"估值分位{nav_pct*100:.0f}%偏高", "pct": 50})
+        triggered_reasons.append(f"估值分位{nav_pct*100:.0f}%偏高")
     elif nav_pct > 0.70:
         signals.append({"type": "估值退出", "level": 1, "icon": "🟡", "weight": 10,
-            "msg": f"NAV分位{nav_pct*100:.0f}%，估值偏高(70-80%)，建议卖出1/3"})
+            "msg": f"NAV分位{nav_pct*100:.0f}%，估值偏高(70-80%)"})
         sell_score += 10
-        urgent_actions.append({"action": "卖出1/3仓位", "reason": f"估值分位{nav_pct*100:.0f}%进入偏高区", "pct": 33})
+        triggered_reasons.append(f"估值分位{nav_pct*100:.0f}%进入偏高区")
     elif nav_pct > 0.60:
         monitor_items.append(f"估值关注: NAV分位{nav_pct*100:.0f}%，接近偏高区间")
 
@@ -188,17 +206,17 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
     ma_signals = []
     if n >= 120:
         if current_nav < ma120:
-            ma_signals.append(("MA120", 3, "🔴", 15, f"跌破MA120({ma120:.4f})年线支撑，建议清仓"))
+            ma_signals.append(("MA120", 3, "🔴", 15, f"跌破MA120({ma120:.4f})年线支撑"))
             sell_score += 15
-            urgent_actions.append({"action": "清仓/大幅减仓", "reason": f"跌破MA120年线({ma120:.4f})", "pct": 100})
+            triggered_reasons.append(f"跌破MA120年线({ma120:.4f})")
         elif current_nav < ma60:
-            ma_signals.append(("MA60", 2, "🟠", 10, f"跌破MA60({ma60:.4f})季线，建议减仓1/2"))
+            ma_signals.append(("MA60", 2, "🟠", 10, f"跌破MA60({ma60:.4f})季线"))
             sell_score += 10
-            urgent_actions.append({"action": "卖出1/2仓位", "reason": f"跌破MA60季线({ma60:.4f})", "pct": 50})
+            triggered_reasons.append(f"跌破MA60季线({ma60:.4f})")
         elif current_nav < ma20:
-            ma_signals.append(("MA20", 1, "🟡", 5, f"跌破MA20({ma20:.4f})月线，建议减仓1/3"))
+            ma_signals.append(("MA20", 1, "🟡", 5, f"跌破MA20({ma20:.4f})月线"))
             sell_score += 5
-            urgent_actions.append({"action": "卖出1/3仓位", "reason": f"跌破MA20月线({ma20:.4f})", "pct": 33})
+            triggered_reasons.append(f"跌破MA20月线({ma20:.4f})")
         elif current_nav < ma10:
             ma_signals.append(("MA10", 0, "🟡", 3, f"跌破MA10({ma10:.4f})，短期走弱，关注"))
             monitor_items.append(f"短期走弱: 价格低于MA10({ma10:.4f})")
@@ -209,24 +227,33 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
             break  # 只显示最严重的破位信号
 
     # ================================================================
-    # 维度5: MACD顶背离
+    # 维度5: MACD顶背离（真实背离检测，非简化的高位死叉判断）
+    # ================================================================
+    if sig_row and n >= 80:
+        # 构建完整MACD序列用于背离检测
+        macd_full = calc_macd(nav)
+        divergence = detect_macd_divergence(nav, macd_full["macd_dif"], lookback=min(80, n))
+        if divergence["type"] == "bearish" and divergence["strength"] > 0.3:
+            sell_score += 10
+            signals.append({"type": "MACD背离", "level": 2, "icon": "🟠", "weight": 10,
+                "msg": f"MACD顶背离(强度{divergence['strength']:.1f})，上涨动能衰竭"})
+            if rsi > 65:
+                triggered_reasons.append("MACD顶背离+RSI偏高")
+            else:
+                monitor_items.append("MACD顶背离: 关注是否进一步确认")
+        elif divergence["type"] == "bearish":
+            monitor_items.append("MACD: 弱顶背离信号，等待确认")
+
+    # ================================================================
+    # 维度5.5: RSI背离
     # ================================================================
     if sig_row and n >= 60:
-        # 简化顶背离判断：价格近60日高点附近 + MACD走弱(死叉或柱线转负)
-        close_recent = nav.tail(60)
-        peak_20d = float(close_recent.tail(20).max())
-        near_peak = current_nav >= peak_20d * 0.97  # 价格在20日高点的3%以内
-
-        if near_peak and hist < 0 and dif < dea:
-            signals.append({"type": "MACD背离", "level": 2, "icon": "🟠", "weight": 10,
-                "msg": "MACD高位死叉+价格接近20日高点，可能出现顶背离，建议减仓"})
-            sell_score += 10
-            if rsi > 70:
-                urgent_actions.append({"action": "卖出1/3仓位", "reason": "MACD顶背离+RSI超买", "pct": 33})
-            else:
-                monitor_items.append("MACD关注: 价格高位但MACD走弱，等待确认")
-        elif near_peak and dif < dea:
-            monitor_items.append("MACD关注: 价格高位DIF开始走弱")
+        rsi_div = detect_rsi_divergence(nav, calc_rsi(nav, 14), lookback=min(60, n))
+        if rsi_div["type"] == "bearish" and rsi_div["strength"] > 0.3:
+            sell_score += 8
+            signals.append({"type": "RSI背离", "level": 2, "icon": "🟠", "weight": 8,
+                "msg": f"RSI顶背离(强度{rsi_div['strength']:.1f})，价格动能背离"})
+            monitor_items.append("RSI顶背离: 价格新高但RSI未确认")
 
     # ================================================================
     # 维度6: 布林带卖出信号
@@ -251,9 +278,9 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
     if holding_days is not None and profit_pct is not None:
         if holding_days < 30 and profit_pct > 0.10:
             signals.append({"type": "时间止盈", "level": 1, "icon": "🟡", "weight": 5,
-                "msg": f"持有仅{holding_days}天浮盈{profit_pct*100:.1f}%，短期暴利建议止盈1/3"})
+                "msg": f"持有仅{holding_days}天浮盈{profit_pct*100:.1f}%，短期暴利需关注"})
             sell_score += 5
-            urgent_actions.append({"action": "卖出1/3仓位", "reason": f"短期暴利(持有{holding_days}天浮盈{profit_pct*100:.0f}%)", "pct": 33})
+            triggered_reasons.append(f"短期暴利(持有{holding_days}天浮盈{profit_pct*100:.0f}%)")
         elif holding_days > 365 and profit_pct < 0.05:
             signals.append({"type": "时间止盈", "level": 0, "icon": "🟡", "weight": 3,
                 "msg": f"持有超1年仅盈利{profit_pct*100:.1f}%，资金效率低，可考虑换仓"})
@@ -271,33 +298,46 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         monitor_items.append(f"RSI偏高: {rsi:.0f}，接近超买区")
 
     # ================================================================
-    # 综合判断
+    # 综合判断（统一层级系统，summary 与 suggested_sell_pct 永远对齐）
+    # 专业原则：单一信号不构成卖出决策，需综合评分驱动
     # ================================================================
-    if sell_score >= 60:
+    sell_score = min(100, sell_score)
+
+    if sell_score >= 70:
         summary = "强烈建议清仓"
-    elif sell_score >= 40:
+        suggested_sell_pct = 100
+        action = "全部清仓"
+    elif sell_score >= 45:
         summary = "建议减仓"
+        suggested_sell_pct = 50
+        action = "卖出1/2仓位"
     elif sell_score >= 20:
-        summary = "关注，准备操作"
+        summary = "关注"
+        suggested_sell_pct = 0   # 关注但不建议立即操作
+        action = None
     else:
         summary = "继续持有"
+        suggested_sell_pct = 0   # 安心持有
+        action = None
 
-    # 如果没有卖出信号
+    # 如果没有卖出信号，补充持有提示
     if not signals:
         signals.append({"type": "持有", "level": 0, "icon": "🟢", "weight": 0,
             "msg": "当前无明显卖出信号，建议继续持有观望"})
 
-    # 构建操作计划
-    action_plan = {
-        "urgent_actions": urgent_actions[:3],  # 最多3个紧急操作
-        "monitor_items": monitor_items[:5],     # 最多5个监控项
-        "next_review_date": (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d"),
-    } if urgent_actions or monitor_items else None
-
-    # 提取最高优先级的建议卖出比例
-    suggested_sell_pct = 0
-    if urgent_actions:
-        suggested_sell_pct = urgent_actions[0].get("pct", 0)
+    # 构建统一操作计划（仅当有值得关注的信号时）
+    action_plan = None
+    if sell_score >= 20:
+        plan = {
+            "level": "清仓" if sell_score >= 70 else "减仓" if sell_score >= 45 else "关注",
+            "action": action,
+            "suggested_sell_pct": suggested_sell_pct,
+            "triggered_reasons": triggered_reasons[:5],
+            "monitor_items": monitor_items[:5],
+            "signals_summary": [s["msg"] for s in signals[:5] if s.get("weight", 0) > 0],
+            "next_review_date": (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d"),
+        }
+        action_plan = plan
 
     return {
         "code": code,
@@ -310,7 +350,7 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         "rsi": round(rsi, 1),
         "signals": signals,
         "summary": summary,
-        "sell_score": min(100, sell_score),
+        "sell_score": sell_score,
         "suggested_sell_pct": suggested_sell_pct,
         "action_plan": action_plan,
         "technicals": {
@@ -343,11 +383,18 @@ def get_buy_advice(code: str) -> dict:
         "FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1", (code,)
     ).fetchone()
 
-    holdings = conn.execute("SELECT * FROM portfolio WHERE code=?", (code,)).fetchall()
+    holdings = conn.execute(
+        "SELECT * FROM portfolio WHERE code=? AND (status IS NULL OR status='active' OR status='')",
+        (code,)
+    ).fetchall()
     already_hold = len(holdings) > 0
     conn.close()
 
     if len(nav_rows) < 120:
+        if already_hold:
+            return {"code": code, "name": basic["name"], "buy_urgency": "已持有，数据不足无法评估加仓",
+                    "suggested_position": "已有持仓", "dca_multiplier": 0, "already_hold": True}
+        return {"error": "数据不足（少于120个交易日），不建议参与"}
         return {"error": "数据不足（少于120个交易日），不建议参与"}
 
     df = pd.DataFrame(nav_rows, columns=["date", "unit_nav", "daily_return"])
@@ -483,10 +530,10 @@ def get_buy_advice(code: str) -> dict:
 
     # 风险提示
     risks = []
-    if rsi < 30:
-        risks.append(f"RSI极度超卖（{rsi:.0f}），可能有潜在利空，建仓前请确认基本面")
-    elif rsi < 25:
+    if rsi < 25:
         risks.append(f"RSI={rsi:.0f}严重超卖，需排查是否为趋势性下跌而非价值回归")
+    elif rsi < 30:
+        risks.append(f"RSI极度超卖（{rsi:.0f}），可能有潜在利空，建仓前请确认基本面")
     if r60d < -0.25:
         risks.append(f"近60日跌幅{r60d*100:.1f}%，需警惕是否为趋势性下跌而非回调，建议等待企稳信号")
     elif r60d < -0.15:
@@ -500,11 +547,20 @@ def get_buy_advice(code: str) -> dict:
     if bb_width_val > 0 and bb_width_val < 0.02:
         risks.append("布林带宽度极窄，即将变盘，建议等方向明确后再操作")
 
+    # 已持有调整：允许低位加仓（摊平成本是定投核心策略）
     if already_hold:
-        buy_urgency = "已持有，不建议追加"
-        batch_plan = "已有持仓，建议参考卖出信号管理"
-        dca_multiplier = 0
-        grid_params = None
+        if dca_multiplier >= 1.5:
+            buy_urgency = f"已持有，当前极度低估（{nav_pct*100:.0f}分位），强烈建议加仓摊平成本"
+            suggested_position = "加仓至目标仓位的70%~80%"
+        elif dca_multiplier >= 1.0:
+            buy_urgency = f"已持有，当前估值偏低（{nav_pct*100:.0f}分位），可考虑加仓"
+            suggested_position = "加仓至目标仓位的50%~60%"
+        elif dca_multiplier >= 0.5:
+            buy_urgency = "已持有，当前估值合理，暂不建议追加"
+            suggested_position = "维持现有仓位"
+        else:
+            buy_urgency = "已持有，当前估值偏高，不建议追加"
+            suggested_position = "维持现有仓位，关注卖出信号"
 
     return {
         "code": code,
@@ -557,6 +613,31 @@ def analyze_portfolio() -> dict:
     sector_allocation = {}
     returns_by_code = {}  # 用于相关性计算
 
+    # 批量获取所有持仓的净值数据（避免N+1查询）
+    conn2 = get_connection()
+    codes = [h["code"] for h in holdings]
+
+    # 批量获取最新净值
+    placeholders = ",".join(["?" for _ in codes])
+    nav_rows = conn2.execute(
+        f"SELECT code, unit_nav, date FROM fund_nav WHERE code IN ({placeholders}) AND (code, date) IN "
+        f"(SELECT code, MAX(date) FROM fund_nav WHERE code IN ({placeholders}) GROUP BY code)",
+        codes + codes
+    ).fetchall()
+    nav_map = {r["code"]: (r["unit_nav"], r["date"]) for r in nav_rows}
+
+    # 批量获取近1年日收益
+    ret_rows = conn2.execute(
+        f"SELECT code, daily_return FROM fund_nav WHERE code IN ({placeholders}) "
+        f"AND date >= date('now', '-252 days') ORDER BY code, date",
+        codes
+    ).fetchall()
+    ret_map = {}
+    for r in ret_rows:
+        code = r["code"]
+        ret_map.setdefault(code, []).append(float(r["daily_return"] or 0))
+    conn2.close()
+
     for h in holdings:
         code = h["code"]
         buy_nav = float(h["buy_nav"])
@@ -569,19 +650,10 @@ def analyze_portfolio() -> dict:
 
         total_invested += buy_amount
 
-        # 获取最新净值 + 日收益序列
-        conn2 = get_connection()
-        row = conn2.execute(
-            "SELECT unit_nav, date FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 1", (code,)
-        ).fetchone()
-        # 获取近1年日收益用于相关性计算
-        ret_rows = conn2.execute(
-            "SELECT daily_return FROM fund_nav WHERE code=? ORDER BY date DESC LIMIT 252", (code,)
-        ).fetchall()
-        conn2.close()
-
-        current_nav = float(row["unit_nav"]) if row else buy_nav
-        current_date = str(row["date"]) if row else "N/A"
+        # 使用批量查询结果
+        nav_info = nav_map.get(code)
+        current_nav = float(nav_info[0]) if nav_info else buy_nav
+        current_date = str(nav_info[1]) if nav_info else "N/A"
 
         if shares == 0 and buy_nav > 0:
             shares = buy_amount / buy_nav
@@ -592,10 +664,9 @@ def analyze_portfolio() -> dict:
         profit_pct = (profit / buy_amount * 100) if buy_amount > 0 else 0
 
         # 存储日收益序列
-        if ret_rows:
-            returns_by_code[code] = pd.Series(
-                [float(r["daily_return"] or 0) for r in reversed(ret_rows)]
-            )
+        ret_list = ret_map.get(code, [])
+        if ret_list:
+            returns_by_code[code] = pd.Series(ret_list)
 
         # 赛道分类
         name = h["name"] or ""
