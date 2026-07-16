@@ -130,6 +130,7 @@ def init_db():
     """)
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_nav_code_date ON fund_nav(code, date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_nav_date ON fund_nav(date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_score_date ON fund_score(calc_date, mode)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_code_date ON fund_signal(code, date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_fund_basic_type ON fund_basic(fund_type)")

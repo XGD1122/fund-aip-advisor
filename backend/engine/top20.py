@@ -187,7 +187,7 @@ def _identify_sector(name: str) -> str:
     return "其他"
 
 
-def _deduplicate_sector(results: list, max_per_sector: int = 4) -> list:
+def _deduplicate_sector(results: list, max_per_sector: int = 3) -> list:
     """同赛道去重：每个赛道最多保留N只，防止抱团霸榜"""
     seen = {}
     filtered = []
@@ -207,40 +207,34 @@ def _deduplicate_sector(results: list, max_per_sector: int = 4) -> list:
 def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
                   sig: dict, basic: dict) -> dict:
     """
-    基于格雷厄姆-巴菲特体系的五维评分（增强版）：
+    专业六维评分体系（对标天天基金+晨星+机构策略）：
 
-    1. 估值分位 (30分) — 10档专业估值定投体系
-    2. 均线系统 (25分) — 金字塔抄底 + MA60趋势方向
-    3. 回撤买入 (20分) — 从高点回撤 = 打折买入
-    4. 质量保障 (15分) — 排除价值陷阱
-    5. 技术信号 (15分) — RSI + MACD + KDJ + 布林带 多指标共振
-    附加：波动率调整因子
+    1. 估值安全边际 (30分) — NAV历史分位，"先看估值定贵贱"
+    2. 收益能力 (20分) — 风险调整后收益+正收益稳定性
+    3. 趋势与均线 (20分) — 均线偏离价值+MA斜率方向
+    4. 技术反转 (15分) — RSI+KDJ+布林带，捕捉极端点
+    5. 基本面质量 (15分) — 规模/年限/费率/跟踪误差
+    6. 回撤与风控 (10分) — 回撤深度+波动率+连跌天数
     """
-    # 构建价格序列（从收益累积）
     price = (1 + rets).cumprod()
     n = len(price)
 
-    # === 1. 估值分位 (30分) ===
-    lookback = min(1260, n)  # 最多5年
+    # === 1. 估值安全边际 (30分) ===
+    lookback = min(1260, n)
     nav_pct = calc_nav_percentile(price, lookback)
-    v_score = _score_valuation(nav_pct)  # 0-30
-
-    # 数据不足2年的基金，估值分按比例打折（避免新基金虚高）
+    v_score = _score_valuation(nav_pct)
     if n < MIN_VALUATION_DAYS:
         v_score = v_score * (n / float(MIN_VALUATION_DAYS))
 
-    # === 2. 均线系统 (25分) ===
+    # === 2. 收益能力 (20分) — 正向评价收益 ===
+    ret_score, sharpe_val = _score_returns(rets, r1y, r2y, n)
+
+    # === 3. 趋势与均线 (20分) — 奖励企稳回升 ===
     ma_dev = _calc_ma_deviations(price)
     ma60_slope = float(sig.get("ma60_slope", 0) or 0)
-    ma_score, ma_below = _score_ma_system(ma_dev, ma60_slope)  # 0-25
+    ma_score, ma_below = _score_ma_system(ma_dev, ma60_slope, r20)
 
-    # === 3. 回撤买入 (20分) ===
-    dd, dd_score = _score_drawdown(price)  # 0-20
-
-    # === 4. 质量保障 (15分) ===
-    q_score = _score_quality(basic, rets)  # 0-15
-
-    # === 5. 技术信号 (15分) ===
+    # === 4. 技术反转 (15分) ===
     rsi = sig.get("rsi14", 50) or 50
     dif = sig.get("macd_dif", 0) or 0
     dea = sig.get("macd_dea", 0) or 0
@@ -252,58 +246,47 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
     bb_mid = sig.get("bb_mid", 0) or 0
     bb_lower = sig.get("bb_lower", 0) or 0
     bb_width_val = sig.get("bb_width", 0) or 0
-
-    # 布林带位置评估（使用实际净值而非复合价格序列）
     current_nav_sig = float(sig.get("unit_nav", 0) or 0)
     bb_score = _score_bollinger_nav(current_nav_sig, bb_upper, bb_mid, bb_lower, bb_width_val)
-    t_score = _score_technical(rsi, dif, dea, hist, kdj_k, kdj_d, kdj_j, bb_score)  # 0-15
+    tech_score = _score_technical(rsi, dif, dea, hist, kdj_k, kdj_d, kdj_j, bb_score)
 
-    score = v_score + ma_score + dd_score + q_score + t_score
+    # === 5. 基本面质量 (10分) ===
+    qual_score = _score_quality(basic)
 
-    # === 波动率调整因子（仅极端高波动打折） ===
+    # === 6. 回撤与风控 (10分) ===
+    dd = _calc_max_drawdown(price)
+    consecutive_down = 0
+    raw_vals = rets.values
+    for i in range(len(raw_vals) - 1, max(-1, len(raw_vals) - 21), -1):
+        if raw_vals[i] < 0: consecutive_down += 1
+        else: break
     annual_vol = float(rets.std() * np.sqrt(252)) if len(rets) >= 60 else 0
-    if annual_vol > 0.50:
-        score *= 0.85   # 极高波动打折（质量评分中已有波动率考量，这里只做极端调整）
-    elif annual_vol > 0.40:
-        score *= 0.92
+    risk_score = _score_risk(dd, annual_vol, consecutive_down)
 
-    # 崩盘折扣：60日跌幅 > 30%（保留深跌反弹机会，但需防范趋势性下跌）
-    if r60 < -FREEFALL_60D:
-        score *= 0.65   # 显著折扣但不完全排除（深跌往往伴随高弹性和高不确定性）
+    # === 综合评分 ===
+    score = v_score + ret_score + ma_score + tech_score + qual_score + risk_score
 
-    # 弱收益惩罚：1年收益<2%的基金虽然不排除，但额外扣分
-    # 真正"别人恐惧时贪婪"的买点：估值低+近期跌+1年负收益=极佳入场时机
-    if r1y < PROFITABILITY_1Y_MIN:
-        score -= 8.0   # 软惩罚，让深度价值标的也能上榜（需在其他维度表现出色）
-
-    # 追高惩罚：1年涨幅 > 25%，需对称性风险约束
+    # === 追高防御（仅极端情况） ===
     warning = ""
-    if r1y > 0.35:
-        score *= 0.75   # 涨幅超35%，追高风险显著
-        warning = "追高风险: 近1年涨幅>35%"
-    elif r1y > 0.25:
-        score *= 0.88   # 温和追高折扣
-        warning = "追高风险: 近1年涨幅>25%"
-    elif nav_pct <= 0.2 and ma_below >= 2:
-        warning = "低估值+均线支撑"
-    elif kdj_j < 0:
-        warning = "KDJ极度超卖"
-    elif bb_width_val > 0 and bb_width_val < 0.02:
-        warning = "布林带极窄，变盘在即"
-
-    # 连续下跌天数
-    raw = rets.values
-    cd = 0
-    for i in range(len(raw) - 1, max(-1, len(raw) - 31), -1):
-        if raw[i] < 0:
-            cd += 1
-        else:
-            break
+    if r1y > 0.40:
+        score *= 0.80
+        warning = "追高风险: 近1年涨幅>40%"
+    elif r1y > 0.30:
+        score *= 0.88
+        warning = "追高风险: 近1年涨幅>30%"
+    elif nav_pct <= 0.25 and r20 > -0.02 and ma_below <= 1:
+        warning = "低估值+趋势企稳+技术配合 → 优质买点"
+    elif nav_pct <= 0.25 and ma_below <= 1:
+        warning = "低估值+趋势改善（关注技术确认）"
+    elif kdj_j < 0 and r20 > 0:
+        warning = "KDJ极度超卖+短期反弹"
+    elif sharpe_val > 0.5 and nav_pct < 0.3:
+        warning = "高夏普+低估值 → 性价比突出"
 
     return {
         "score": min(100, max(0, score)),
         "nav_pct": nav_pct,
-        "consecutive_down": cd,
+        "consecutive_down": consecutive_down,
         "drawdown": dd,
         "ma_below": ma_below,
         "warning": warning,
@@ -315,33 +298,75 @@ def _score_master(rets: pd.Series, r5, r10, r20, r60, r1y, r2y,
     }
 
 
-# === 1. 估值分位 (0-30) ===
+# === 1. 估值安全边际 (0-30) ===
+# 对标机构PE分位<30%=低估标准，这是价值投资最核心的维度
 
 def _score_valuation(nav_pct: float) -> float:
-    """格雷厄姆估值分位评分 — 10档专业估值定投体系"""
-    if nav_pct <= 0.05:
-        return 30.0   # 五年一遇，重仓机会
-    elif nav_pct <= 0.10:
-        return 28.0   # 极度低估，2倍定投区
-    elif nav_pct <= 0.20:
-        return 25.0   # 明显低估，1.5倍定投区
-    elif nav_pct <= 0.30:
-        return 21.0   # 低估，正常加仓
-    elif nav_pct <= 0.40:
-        return 16.0   # 偏低，可少量买入
-    elif nav_pct <= 0.50:
-        return 11.0   # 合理偏低，观望
-    elif nav_pct <= 0.60:
-        return 6.0    # 合理，暂不加仓
-    elif nav_pct <= 0.70:
-        return 3.0    # 偏高，不建议买入
-    elif nav_pct <= 0.80:
-        return 1.0    # 高估，等待回调
+    """估值安全边际 — 越便宜越加分"""
+    if nav_pct <= 0.05:   return 30.0   # 极度低估：历史底部5%以内
+    elif nav_pct <= 0.10: return 28.0
+    elif nav_pct <= 0.20: return 24.0   # 显著低估
+    elif nav_pct <= 0.30: return 18.0   # 低估（机构标准线PE<30%分位）
+    elif nav_pct <= 0.40: return 12.0   # 偏低
+    elif nav_pct <= 0.50: return 7.0    # 合理偏低
+    elif nav_pct <= 0.60: return 4.0    # 合理
+    elif nav_pct <= 0.70: return 1.0    # 略偏高
+    else:                 return 0.0    # 安全边际不足
+
+
+# === 2. 收益能力 (0-20) ===
+
+def _score_returns(returns: pd.Series, r1y: float, r2y: float, n: int) -> tuple:
+    """
+    风险调整后收益 — 对标天天基金"收益率"+晨星风险调整收益核心
+    正向评价：好收益加分，而不是跌了扣分
+    """
+    score = 0.0
+
+    # 夏普比率 (10分) — 晨星核心指标
+    if n >= 252:
+        sh = calc_sharpe(returns=returns, risk_free=RISK_FREE_RATE)
     else:
-        return 0.0    # 极度高估，不买
+        sh = 0
+    if sh > 1.0:        score += 10.0
+    elif sh > 0.7:      score += 8.0
+    elif sh > 0.4:      score += 6.0
+    elif sh > 0.15:     score += 4.0
+    elif sh > 0:        score += 2.0
+    # sh ≤ 0: 不奖励也不惩罚（可能是低估值机会）
+
+    # 绝对收益 (5分) — 真金白银赚到钱才是好基金
+    if r1y > 0.10:      score += 5.0    # 年化>10%
+    elif r1y > 0.03:    score += 4.0    # 正收益
+    elif r1y > 0:       score += 3.0
+    elif r1y > -0.10:   score += 2.0    # 微亏可接受
+    elif r1y > -0.20:   score += 1.0
+    # r1y < -20%: 不加分，由估值/技术维度判断是否底部机会
+
+    # 正收益稳定性 (5分) — 对标天天基金"稳定性"维度
+    if n >= 60:
+        monthly = returns.tail(min(252, n)).values
+        chunks = max(1, len(monthly) // 21)
+        monthly_rets = []
+        for i in range(chunks):
+            chunk = monthly[i*21:(i+1)*21]
+            ret = (1 + pd.Series(chunk)).prod() - 1
+            monthly_rets.append(ret)
+        positive_months = sum(1 for r in monthly_rets if r > 0)
+        total_months = max(1, len(monthly_rets))
+        positive_ratio = positive_months / total_months
+        if positive_ratio > 0.65:   score += 5.0
+        elif positive_ratio > 0.55: score += 4.0
+        elif positive_ratio > 0.45: score += 2.5
+        elif positive_ratio > 0.35: score += 1.0
+        # else: 不加分（可能是熊市底部）
+    else:
+        score += 2.0  # 数据不足给中值
+
+    return min(20.0, score), sh
 
 
-# === 2. 均线系统 (0-25) ===
+# === 3. 趋势与均线 (0-20) ===
 
 def _calc_ma_deviations(price: pd.Series) -> dict:
     """计算价格对 MA60/MA120/MA240 的偏离度"""
@@ -356,50 +381,63 @@ def _calc_ma_deviations(price: pd.Series) -> dict:
     return result
 
 
-def _score_ma_system(ma_dev: dict, ma60_slope: float = 0) -> tuple:
+def _score_ma_system(ma_dev: dict, ma60_slope: float = 0, r20: float = 0) -> tuple:
     """
-    均线金字塔评分 (0-25)
-    格雷厄姆式阶梯：跌破均线越多 → 打折越深 → 加分越多
-    新增：MA60趋势方向加成
+    趋势与均线评分 (0-20) — 对标机构"估值+趋势双确认"
+    跌破均线=价值信号(奖励)，均线斜率向上=企稳信号(加分)
+    两者互补而非矛盾：深度跌破+斜率转正 = 最佳买点
     """
     score = 0.0
-    below = 0
+    below_count = 0  # 统计价格跌破几条均线
     d60 = ma_dev.get("ma60", 0) or 0
     d120 = ma_dev.get("ma120", 0) or 0
     d240 = ma_dev.get("ma240", 0) or 0
 
-    if d240 < 0:
-        score += 10.0   # 破年线 = 三年一遇好机会
-        below += 1
-    elif d240 < 0.02:
-        score += 6.0    # 接近年线支撑
-    else:
-        score += 2.0    # 年线上方
+    # --- 均线偏离度 (12分) ---
+    # 核心逻辑：跌破均线=价值机会。适度跌破加分，但极度偏离不加分（可能有问题）
 
-    if d120 < 0:
-        score += 8.0    # 破半年线
-        below += 1
-    elif d120 < 0.02:
-        score += 5.0
-    else:
-        score += 2.0
+    # MA240 偏离 (4分)
+    if d240 < -0.10:      score += 3.0; below_count += 1  # 深度跌破 → 长线价值
+    elif d240 < -0.03:    score += 3.5; below_count += 1  # 明显跌破 → 价值区域
+    elif d240 < 0:        score += 4.0; below_count += 1  # 轻微跌破 → 黄金买点
+    elif d240 < 0.02:     score += 3.0                     # 接近均线
+    elif d240 < 0.05:     score += 2.0                     # 略高于均线
+    else:                 score += 1.0                     # 远高于均线 → 偏贵
 
-    if d60 < 0:
-        score += 7.0    # 破季线
-        below += 1
-    elif d60 < 0.02:
-        score += 4.0
-    else:
-        score += 2.0
+    # MA120 偏离 (4分)
+    if d120 < -0.08:      score += 3.0; below_count += 1
+    elif d120 < -0.02:    score += 3.5; below_count += 1
+    elif d120 < 0:        score += 4.0; below_count += 1
+    elif d120 < 0.03:     score += 3.0
+    elif d120 < 0.08:     score += 2.0
+    else:                 score += 1.0
 
-    # MA60趋势方向加成 (0~2分)
-    if ma60_slope > 0.02:
-        score += 2.0    # 均线向上，趋势健康
-        below = max(0, below - 1)  # 趋势向上时降低破位严重度
-    elif ma60_slope > 0:
-        score += 1.0    # 均线走平
+    # MA60 偏离 (4分) — 短期偏离最关键
+    if d60 < -0.06:       score += 2.5; below_count += 1  # 大幅偏离 → 超跌
+    elif d60 < -0.02:     score += 3.0; below_count += 1  # 适度偏离 → 价值
+    elif d60 < 0:         score += 4.0; below_count += 1  # 轻微跌破 → 最佳
+    elif d60 < 0.02:      score += 3.5                     # 接近均线 → 即将突破
+    elif d60 < 0.05:      score += 2.5                     # 小幅站上
+    else:                 score += 1.0                     # 偏离过大 → 追高风险
 
-    return min(25.0, score), below
+    # --- 均线斜率/趋势 (8分) ---
+    # 核心逻辑：均线方向向上=趋势向好，斜率越大越好
+
+    # MA60 斜率 (5分)
+    if ma60_slope > 0.03:     score += 5.0   # 强劲上翘 → 趋势确认
+    elif ma60_slope > 0.015:  score += 4.0   # 稳步向上
+    elif ma60_slope > 0.005:  score += 3.0   # 缓慢回升
+    elif ma60_slope > 0:      score += 2.0   # 开始转正
+    elif ma60_slope > -0.01:  score += 1.0   # 接近走平，即将拐头
+    # 斜率 < -0.01: 还在下跌中，不加分
+
+    # r20 动能确认 (3分) — 短期已开始反弹
+    if r20 > 0.03:            score += 3.0   # 近20日稳健上涨
+    elif r20 > 0.01:          score += 2.0   # 小幅上涨
+    elif r20 > 0:             score += 1.0   # 微涨，至少没在跌
+    # r20 ≤ 0: 不加分（未确认反弹）
+
+    return min(20.0, score), below_count
 
 
 # === 2.5 布林带位置 (整合进技术分前独立计算) ===
@@ -428,62 +466,10 @@ def _score_bollinger_nav(current_nav: float, bb_upper: float, bb_mid: float, bb_
     return min(5.0, score)
 
 
-# === 3. 回撤买入 (0-20) ===
+# === 5. 基本面质量 (0-15) ===
 
-def _score_drawdown(price: pd.Series) -> tuple:
-    """
-    回撤买入法：双窗口评估（1年+2年），综合判断打折程度
-    巴菲特：别人恐惧时贪婪
-    """
-    n = len(price)
-
-    # 1年窗口回撤 (12分)
-    win1y = min(252, n)
-    peak1y = price.tail(win1y).max()
-    dd1y = float((price.iloc[-1] - peak1y) / peak1y)
-
-    if dd1y <= -0.30:
-        score1y = 12.0
-    elif dd1y <= -0.20:
-        score1y = 10.0
-    elif dd1y <= -0.15:
-        score1y = 8.0
-    elif dd1y <= -0.10:
-        score1y = 6.0
-    elif dd1y <= -0.05:
-        score1y = 4.0
-    elif dd1y < 0:
-        score1y = 1.0   # 轻微回撤
-    else:
-        score1y = 0.0   # 无回撤或新高，不奖励
-
-    # 2年窗口回撤 (8分) — 捕捉更深层打折机会
-    if n >= 504:
-        win2y = min(504, n)
-        peak2y = price.tail(win2y).max()
-        dd2y = float((price.iloc[-1] - peak2y) / peak2y)
-        if dd2y <= -0.35:
-            score2y = 8.0
-        elif dd2y <= -0.25:
-            score2y = 6.0
-        elif dd2y <= -0.15:
-            score2y = 4.0
-        elif dd2y <= -0.05:
-            score2y = 2.0
-        else:
-            score2y = 1.0
-        dd = dd2y if dd2y < dd1y else dd1y  # 取更深的回撤作为展示
-    else:
-        score2y = 0
-        dd = dd1y
-
-    return dd, score1y + score2y
-
-
-# === 4. 质量保障 (0-15) ===
-
-def _score_quality(basic: dict, returns: pd.Series) -> float:
-    """排除价值陷阱：便宜但基本面差的基金要扣分（含跟踪误差评估）"""
+def _score_quality(basic: dict) -> float:
+    """基本面质量（0-15）— 对标晨星 People/Process/Parent + Price Score"""
     score = 0.0
 
     # 基金年限 (4分)
@@ -493,108 +479,112 @@ def _score_quality(basic: dict, returns: pd.Series) -> float:
         age = (datetime.now() - d).days / 365.0
     except Exception:
         age = 1
-    if age >= 5:
-        score += 4.0
-    elif age >= 3:
-        score += 3.0
-    elif age >= 1:
-        score += 2.0
-    else:
-        score += 1.0
+    if age >= 5:       score += 4.0
+    elif age >= 3:     score += 3.0
+    elif age >= 1:     score += 1.5
 
-    # 规模 (4分)
+    # 基金规模 (4分)
     scale = basic.get("scale", 0) or 0
     if scale:
         s = float(scale) / 1e8
-        if 5 <= s <= 50:
-            score += 4.0
-        elif 2 <= s < 5 or s > 50:
-            score += 2.5
-        else:
-            score += 1.5
+        if 5 <= s <= 50:    score += 4.0
+        elif 2 <= s < 5 or s > 50: score += 2.5
+        else:               score += 1.0
     else:
         score += 2.0
 
-    # 夏普比率 (4分)
-    if len(returns) >= 252:
-        sh = calc_sharpe(returns=returns, risk_free=RISK_FREE_RATE)
-        if sh > 0.8:
-            score += 4.0
-        elif sh > 0.5:
-            score += 3.0
-        elif sh > 0.2:
-            score += 2.0
-        elif sh > 0:
-            score += 1.0
-        else:
-            score += 0.0   # 负夏普 → 亏钱基金
-    else:
-        score += 1.5
+    # 费率优势 (3分) — 晨星 Price Score
+    fee_mgmt = basic.get("fee_mgmt", 0) or 0
+    fee_custody = basic.get("fee_custody", 0) or 0
+    total_fee = float(fee_mgmt) + float(fee_custody)
+    if total_fee <= 0.5:      score += 3.0
+    elif total_fee <= 0.8:    score += 2.0
+    elif total_fee <= 1.0:    score += 1.0
 
-    # 波动率评估（指数基金核心质量指标，3分）
-    # 注：理想情况下应使用跟踪误差(fund_ret - benchmark_ret)，此处用年化波动率近似
-    # 低波动→紧密跟踪或稳定增长；高波动→跟踪偏差大或策略激进
-    if len(returns) >= 60:
-        annual_vol = float(returns.std() * np.sqrt(252))
-        if annual_vol < 0.15:
-            score += 3.0   # 低波动，紧密跟踪
-        elif annual_vol < 0.22:
-            score += 2.0   # 中等波动
-        elif annual_vol < 0.30:
-            score += 1.0   # 偏高
-        else:
-            score += 0.0   # 高波动=跟踪效果差
-    else:
-        score += 1.0
+    # 跟踪误差 (4分) — 被动基金核心指标
+    tracking_error = basic.get("tracking_error", 0) or 0
+    te = float(tracking_error)
+    if te <= 0:
+        score += 2.0   # 数据缺失，给中值不惩罚也不奖励
+    elif te < 0.01:   score += 4.0
+    elif te < 0.03:   score += 3.0
+    elif te < 0.05:   score += 2.0
+    elif te < 0.10:   score += 1.0
 
-    return score
+    return min(15.0, score)
 
 
-# === 5. 技术信号 (0-10) ===
+# === 6. 回撤与风控 (0-10) ===
+
+def _calc_max_drawdown(price: pd.Series) -> float:
+    """计算1年内最大回撤"""
+    n = len(price)
+    win = min(252, n)
+    recent = price.tail(win)
+    peak = recent.cummax()
+    return float((recent - peak).div(peak).min())
+
+
+def _score_risk(dd: float, annual_vol: float, consecutive_down: int) -> float:
+    """
+    回撤与风控 (0-10) — 对标天天基金"抗风险"+"稳定性"
+    回撤深→机会大（加分），但波动过高/连续下跌→风险高（不加分）
+    """
+    score = 0.0
+
+    # 回撤深度 (5分) — 深度回撤提供安全边际
+    if dd <= -0.35:     score += 5.0
+    elif dd <= -0.25:   score += 4.0
+    elif dd <= -0.15:   score += 3.0
+    elif dd <= -0.08:   score += 2.0
+    elif dd < 0:        score += 1.0
+
+    # 波动率 (3分)
+    if annual_vol > 0:
+        if annual_vol < 0.18:       score += 3.0
+        elif annual_vol < 0.25:     score += 2.0
+        elif annual_vol < 0.35:     score += 1.0
+
+    # 连跌天数 (2分) — 越少越好
+    if consecutive_down <= 2:   score += 2.0
+    elif consecutive_down <= 5: score += 1.0
+
+    return min(10.0, score)
+
+
+# === 4. 技术反转 (0-15) ===
 
 def _score_technical(rsi: float, dif: float, dea: float, hist: float,
                      kdj_k: float = 50, kdj_d: float = 50, kdj_j: float = 50,
                      bb_score: float = 0) -> float:
-    """底部技术信号 (0-15)：RSI超卖 + MACD拐头 + KDJ + 布林带"""
+    """底部技术反转信号 (0-15)：RSI超卖 + MACD拐头 + KDJ + 布林带"""
     score = 0.0
 
-    # RSI (6分) — 平滑过渡，避免断崖式跳变
-    if 30 <= rsi <= 40:
-        score += 6.0   # 超卖黄金区
-    elif 25 <= rsi < 30:
-        score += 4.0   # 深度超卖（存在继续下跌风险，但机会大于风险）
-    elif rsi < 25:
-        score += 2.5   # 极度超卖 → 可能有雷，仅保留基础分
-    elif 40 < rsi <= 45:
-        score += 4.5   # 偏弱
-    elif 45 < rsi <= 50:
-        score += 3.0   # 中性偏低
-    elif 50 < rsi <= 60:
-        score += 2.0
-    else:
-        score += 0.5
+    # RSI (6分) — 30-45最佳买入区
+    if 30 <= rsi <= 40:       score += 6.0
+    elif 25 <= rsi < 30:      score += 4.0
+    elif rsi < 25:            score += 2.0
+    elif 40 < rsi <= 45:      score += 4.0
+    elif 45 < rsi <= 50:      score += 3.0
+    elif 50 < rsi <= 60:      score += 2.0
+    else:                     score += 1.0
 
-    # MACD (4分) — 保持原有逻辑
+    # MACD (4分)
     if dif > dea:
-        score += 2.0   # 金叉
+        score += 3.0   # 金叉
         if hist > 0:
-            score += 2.0  # 柱线转正 → 动能确认
-    elif dif < dea and abs(dea) > 0.001 and abs(dif - dea) / max(abs(dea), 0.001) < 0.05:  # 接近金叉（5%以内，防除零）
-        score += 1.0
+            score += 1.0  # 动能确认
+    elif dif < dea and abs(dea) > 0.001 and abs(dif - dea) / max(abs(dea), 0.001) < 0.05:
+        score += 1.0   # 即将金叉
 
-    # KDJ (3分) — 新增
-    if kdj_j < 0:
-        score += 2.0   # J值<0，极度超卖
-    elif kdj_j < 20:
-        score += 1.5   # 深度超卖
-    if kdj_k > kdj_d and kdj_k < 30:
-        score += 1.0   # 低位金叉
+    # KDJ (3分)
+    if kdj_j < 0:            score += 3.0
+    elif kdj_j < 20:         score += 2.0
+    if kdj_k > kdj_d and kdj_k < 30: score += 1.0
 
-    # 布林带位置 (2分) — 从bb_score映射
-    if bb_score >= 3:
-        score += 2.0
-    elif bb_score >= 2:
-        score += 1.0
+    # 布林带 (2分)
+    if bb_score >= 3:        score += 2.0
+    elif bb_score >= 2:      score += 1.0
 
     return min(15.0, score)
 

@@ -71,6 +71,9 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
     bb_mid = float(sig_row["bb_mid"]) if sig_row and sig_row["bb_mid"] else 0
     bb_lower = float(sig_row["bb_lower"]) if sig_row and sig_row["bb_lower"] else 0
     bb_width_val = float(sig_row["bb_width"]) if sig_row and sig_row["bb_width"] else 0
+    kdj_k = float(sig_row["kdj_k"]) if sig_row and sig_row["kdj_k"] else 50
+    kdj_d = float(sig_row["kdj_d"]) if sig_row and sig_row["kdj_d"] else 50
+    kdj_j = float(sig_row["kdj_j"]) if sig_row and sig_row["kdj_j"] else 50
 
     # 计算估值分位
     lookback = min(1260, n)
@@ -138,6 +141,30 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
             triggered_reasons.append(f"浮盈{profit_pct*100:.0f}%触发{adj_15*100:.0f}%止盈线")
 
     # ================================================================
+    # 维度1.5: 亏损止损 — 对标"截断亏损，让利润奔跑"
+    # ================================================================
+    if profit_pct is not None and profit_pct < 0:
+        abs_loss = abs(profit_pct)
+        if abs_loss > 0.15:
+            signals.append({"type": "亏损止损", "level": 3, "icon": "🔴", "weight": 20,
+                "msg": f"亏损{abs_loss*100:.1f}%超过15%止损线，建议止损避免更大损失"})
+            sell_score += 20
+            triggered_reasons.append(f"亏损{abs_loss*100:.0f}%触发15%止损线")
+        elif abs_loss > 0.10:
+            signals.append({"type": "亏损止损", "level": 2, "icon": "🟠", "weight": 12,
+                "msg": f"亏损{abs_loss*100:.1f}%超过10%，关注是否继续恶化"})
+            sell_score += 12
+            triggered_reasons.append(f"亏损{abs_loss*100:.0f}%触发10%止损关注")
+        elif abs_loss > 0.05 and holding_days and holding_days > 90:
+            # 长期无改善
+            r60 = float(returns_series.tail(min(60, n)).sum()) if n >= 20 else 0
+            if r60 < 0:
+                signals.append({"type": "亏损止损", "level": 1, "icon": "🟡", "weight": 5,
+                    "msg": f"亏损{abs_loss*100:.1f}%且持有{holding_days}天无改善，关注"})
+                sell_score += 5
+                triggered_reasons.append(f"长期亏损{abs_loss*100:.0f}%无改善(持有{holding_days}天)")
+
+    # ================================================================
     # 维度2: 阶梯式移动止盈（降低激活门槛+收紧允许回撤）
     # ================================================================
     if profit_pct is not None and profit_pct > 0.03 and buy_date and buy_nav and buy_nav > 0:
@@ -180,17 +207,28 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
                 monitor_items.append(f"移动止盈关注: 当前回撤{abs(dd_from_peak)*100:.1f}%，接近允许值{allowed_dd*100:.0f}%的一半")
 
     # ================================================================
-    # 维度3: 估值退出
+    # 维度3: 估值退出（增加估值+涨幅双高检测）
     # ================================================================
+    # 计算近1年涨幅，用于估值+涨幅双高判断
+    r1y_approx = float(returns_series.tail(min(252, n)).sum()) if n >= 60 else 0
+
     if nav_pct > 0.90:
-        signals.append({"type": "估值退出", "level": 3, "icon": "🔴", "weight": 20,
-            "msg": f"NAV分位{nav_pct*100:.0f}%，极度高估(>90%)"})
-        sell_score += 20
+        weight = 20
+        msg = f"NAV分位{nav_pct*100:.0f}%，极度高估(>90%)"
+        if r1y_approx > 0.30:
+            weight = 25
+            msg += "+近1年涨幅>30%→估值与涨幅双高，清仓信号"
+        signals.append({"type": "估值退出", "level": 3, "icon": "🔴", "weight": weight, "msg": msg})
+        sell_score += weight
         triggered_reasons.append(f"估值分位{nav_pct*100:.0f}%触发>90%清仓线")
     elif nav_pct > 0.80:
-        signals.append({"type": "估值退出", "level": 2, "icon": "🟠", "weight": 15,
-            "msg": f"NAV分位{nav_pct*100:.0f}%，高估(80-90%)"})
-        sell_score += 15
+        weight = 15
+        msg = f"NAV分位{nav_pct*100:.0f}%，高估(80-90%)"
+        if r1y_approx > 0.25:
+            weight = 20
+            msg += "+近1年涨幅较高→估值与涨幅双高"
+        signals.append({"type": "估值退出", "level": 2, "icon": "🟠", "weight": weight, "msg": msg})
+        sell_score += weight
         triggered_reasons.append(f"估值分位{nav_pct*100:.0f}%偏高")
     elif nav_pct > 0.70:
         signals.append({"type": "估值退出", "level": 1, "icon": "🟡", "weight": 10,
@@ -201,24 +239,46 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         monitor_items.append(f"估值关注: NAV分位{nav_pct*100:.0f}%，接近偏高区间")
 
     # ================================================================
-    # 维度4: 多级均线破位
+    # 维度4: 多级均线破位（与买入引擎一致：趋势走坏才卖出，否则是价值机会）
+    # 核心原则：低于均线+斜率恶化=卖出，低于均线+斜率改善=价值机会(不卖)
     # ================================================================
     ma_signals = []
     if n >= 120:
-        if current_nav < ma120:
-            ma_signals.append(("MA120", 3, "🔴", 15, f"跌破MA120({ma120:.4f})年线支撑"))
-            sell_score += 15
-            triggered_reasons.append(f"跌破MA120年线({ma120:.4f})")
+        # 获取MA60斜率用于多周期验证
+        ma60_values = nav.tail(60)
+        ma60_before = float(ma60_values.head(30).mean()) if len(ma60_values) >= 30 else ma60
+        ma60_slope = (ma60 - ma60_before) / ma60_before if ma60_before > 0 else 0
+
+        if current_nav < ma120 and ma60_slope < -0.02:
+            # 跌破年线+MA60加速下行 = 长期趋势恶化 → 卖出
+            ma_signals.append(("MA120", 3, "🔴", 18,
+                f"跌破MA120({ma120:.4f})年线+MA60加速下行→长期趋势恶化"))
+            sell_score += 18
+            triggered_reasons.append(f"跌破MA120年线({ma120:.4f})+趋势恶化")
+        elif current_nav < ma120:
+            # 跌破年线但MA60未恶化 → 可能是价值机会（与买入引擎一致）
+            monitor_items.append(f"价格低于MA120({ma120:.4f})但MA60趋势未恶化，可能是长线价值机会")
+        elif current_nav < ma60 and ma60_slope < -0.01:
+            # 跌破季线+MA60下行 = 中期趋势走坏 → 卖出
+            ma_signals.append(("MA60", 3, "🔴", 13,
+                f"跌破MA60({ma60:.4f})季线+MA60方向向下→中期趋势走坏"))
+            sell_score += 13
+            triggered_reasons.append(f"跌破MA60季线({ma60:.4f})+趋势走坏")
         elif current_nav < ma60:
-            ma_signals.append(("MA60", 2, "🟠", 10, f"跌破MA60({ma60:.4f})季线"))
-            sell_score += 10
-            triggered_reasons.append(f"跌破MA60季线({ma60:.4f})")
+            # 跌破季线但MA60走平或上行 → 价值区域，不触发卖出
+            if ma60_slope >= 0:
+                monitor_items.append(f"价格低于MA60({ma60:.4f})但MA60走平/上行→可能是价值区域机会")
+            else:
+                monitor_items.append(f"价格低于MA60({ma60:.4f})，关注MA60斜率是否继续恶化")
         elif current_nav < ma20:
-            ma_signals.append(("MA20", 1, "🟡", 5, f"跌破MA20({ma20:.4f})月线"))
-            sell_score += 5
-            triggered_reasons.append(f"跌破MA20月线({ma20:.4f})")
+            # 跌破MA20但MA60支撑完好→降级为监控
+            if current_nav > ma60:
+                monitor_items.append(f"短期回调: 跌破MA20({ma20:.4f})但MA60({ma60:.4f})支撑完好")
+            else:
+                ma_signals.append(("MA20", 1, "🟡", 5, f"跌破MA20({ma20:.4f})月线"))
+                sell_score += 5
+                triggered_reasons.append(f"跌破MA20月线({ma20:.4f})")
         elif current_nav < ma10:
-            ma_signals.append(("MA10", 0, "🟡", 3, f"跌破MA10({ma10:.4f})，短期走弱，关注"))
             monitor_items.append(f"短期走弱: 价格低于MA10({ma10:.4f})")
 
     for m in ma_signals:
@@ -298,8 +358,59 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         monitor_items.append(f"RSI偏高: {rsi:.0f}，接近超买区")
 
     # ================================================================
-    # 综合判断（统一层级系统，summary 与 suggested_sell_pct 永远对齐）
-    # 专业原则：单一信号不构成卖出决策，需综合评分驱动
+    # 维度9: KDJ超买信号 — A股经典短线超买指标
+    # ================================================================
+    if kdj_j > 100:
+        if profit_pct is not None and profit_pct > 0.10:
+            signals.append({"type": "KDJ超买", "level": 2, "icon": "🟠", "weight": 8,
+                "msg": f"KDJ-J={kdj_j:.0f}极度超买+浮盈{profit_pct*100:.0f}%，建议减仓锁利"})
+            sell_score += 8
+            triggered_reasons.append(f"KDJ-J={kdj_j:.0f}极度超买(>100)+浮盈{profit_pct*100:.0f}%")
+        else:
+            signals.append({"type": "KDJ超买", "level": 1, "icon": "🟡", "weight": 4,
+                "msg": f"KDJ-J={kdj_j:.0f}超买(>100)，短期回调概率大"})
+            sell_score += 4
+            monitor_items.append(f"KDJ超买: J={kdj_j:.0f}>100")
+    elif kdj_j > 80:
+        monitor_items.append(f"KDJ偏高: J={kdj_j:.0f}，接近超买区")
+    if kdj_k > 80 and kdj_d > 80:
+        monitor_items.append(f"KDJ高位钝化: K={kdj_k:.0f} D={kdj_d:.0f}，警惕变盘")
+
+    # ================================================================
+    # 多因子共振加成 — 专业核心：单一信号不构成决策，多信号共振=高确定性
+    # ================================================================
+    resonance_count = 0
+    resonance_bonus = 0
+
+    # 共振对1: 估值偏高 + 均线破位
+    if nav_pct > 0.70 and current_nav < ma60:
+        resonance_count += 1
+        resonance_bonus += 5
+        monitor_items.append("共振: 估值偏高+跌破MA60→卖出确定性提升")
+
+    # 共振对2: MACD顶背离 + RSI偏高
+    has_macd_bear = any(s["type"] == "MACD背离" for s in signals)
+    if has_macd_bear and rsi > 65:
+        resonance_count += 1
+        resonance_bonus += 5
+        monitor_items.append("共振: MACD顶背离+RSI偏高→顶部确认增强")
+
+    # 共振对3: 目标止盈触发 + 估值偏高
+    has_profit_target = any(s["type"] == "目标止盈" for s in signals)
+    if has_profit_target and nav_pct > 0.70:
+        resonance_count += 1
+        resonance_bonus += 5
+        triggered_reasons.append("共振: 目标止盈+估值偏高双重确认")
+
+    # 三因子共振: 直接升级到清仓级别
+    if resonance_count >= 2:
+        resonance_bonus += 10
+        triggered_reasons.append(f"多因子共振({resonance_count}对)→卖出信号强烈")
+
+    sell_score += resonance_bonus
+
+    # ================================================================
+    # 综合判断 — 对标机构"30%→50%→100%"分层策略
     # ================================================================
     sell_score = min(100, sell_score)
 
@@ -307,17 +418,21 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
         summary = "强烈建议清仓"
         suggested_sell_pct = 100
         action = "全部清仓"
-    elif sell_score >= 45:
-        summary = "建议减仓"
+    elif sell_score >= 50:
+        summary = "建议大幅减仓"
         suggested_sell_pct = 50
         action = "卖出1/2仓位"
-    elif sell_score >= 20:
-        summary = "关注"
-        suggested_sell_pct = 0   # 关注但不建议立即操作
-        action = None
+    elif sell_score >= 30:
+        summary = "建议适度减仓"
+        suggested_sell_pct = 30
+        action = "卖出1/3仓位"
+    elif sell_score >= 15:
+        summary = "关注卖出时机"
+        suggested_sell_pct = 10
+        action = "减仓10%或暂持观望"
     else:
         summary = "继续持有"
-        suggested_sell_pct = 0   # 安心持有
+        suggested_sell_pct = 0
         action = None
 
     # 如果没有卖出信号，补充持有提示
@@ -327,9 +442,17 @@ def get_sell_signals(code: str, buy_nav: float = None, buy_date: str = None) -> 
 
     # 构建统一操作计划（仅当有值得关注的信号时）
     action_plan = None
-    if sell_score >= 20:
+    if sell_score >= 15:
+        if sell_score >= 70:
+            level = "清仓"
+        elif sell_score >= 50:
+            level = "大幅减仓"
+        elif sell_score >= 30:
+            level = "适度减仓"
+        else:
+            level = "关注"
         plan = {
-            "level": "清仓" if sell_score >= 70 else "减仓" if sell_score >= 45 else "关注",
+            "level": level,
             "action": action,
             "suggested_sell_pct": suggested_sell_pct,
             "triggered_reasons": triggered_reasons[:5],
@@ -394,7 +517,6 @@ def get_buy_advice(code: str) -> dict:
         if already_hold:
             return {"code": code, "name": basic["name"], "buy_urgency": "已持有，数据不足无法评估加仓",
                     "suggested_position": "已有持仓", "dca_multiplier": 0, "already_hold": True}
-        return {"error": "数据不足（少于120个交易日），不建议参与"}
         return {"error": "数据不足（少于120个交易日），不建议参与"}
 
     df = pd.DataFrame(nav_rows, columns=["date", "unit_nav", "daily_return"])

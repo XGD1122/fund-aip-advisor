@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from models.database import init_db, get_connection
 from datetime import datetime, timedelta
@@ -121,7 +121,7 @@ def api_top20(refresh: bool = False):
         _cache = {"data": data, "time": time.time(), "date": today}
         return data
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/admin/refresh")
@@ -136,35 +136,35 @@ def api_admin_refresh():
 def api_fund_nav_on_date(code: str, date: str):
     """查询某只基金在指定日期的净值"""
     conn = get_connection()
-    row = conn.execute(
-        "SELECT unit_nav, daily_return FROM fund_nav WHERE code=? AND date=?",
-        (code, date)
-    ).fetchone()
-    conn.close()
-    if not row:
-        # 尝试找最近交易日
-        conn = get_connection()
+    try:
         row = conn.execute(
-            "SELECT date, unit_nav FROM fund_nav WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
+            "SELECT unit_nav, daily_return FROM fund_nav WHERE code=? AND date=?",
             (code, date)
         ).fetchone()
+        if not row:
+            # 尝试找最近交易日
+            row = conn.execute(
+                "SELECT date, unit_nav FROM fund_nav WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
+                (code, date)
+            ).fetchone()
+            if row:
+                return {"code": code, "date": row["date"], "nav": round(float(row["unit_nav"]), 4), "exact": False, "note": f"{date} 无数据，使用最近交易日 {row['date']}"}
+            raise HTTPException(status_code=404, detail=f"基金 {code} 在 {date} 及之前均无净值数据")
+        return {"code": code, "date": date, "nav": round(float(row["unit_nav"]), 4), "exact": True}
+    finally:
         conn.close()
-        if row:
-            return {"code": code, "date": row["date"], "nav": round(float(row["unit_nav"]), 4), "exact": False, "note": f"{date} 无数据，使用最近交易日 {row['date']}"}
-        return {"error": f"基金 {code} 在 {date} 及之前均无净值数据"}
-    return {"code": code, "date": date, "nav": round(float(row["unit_nav"]), 4), "exact": True}
 
 
 @app.get("/api/fund/{code}")
 def api_fund_detail(code: str):
     """返回单只基金的净值历史、技术指标、评分明细"""
+    conn = get_connection()
     try:
-        conn = get_connection()
         basic = conn.execute(
             "SELECT code, name, fund_type FROM fund_basic WHERE code=?", (code,)
         ).fetchone()
         if not basic:
-            return {"error": "基金不存在"}
+            raise HTTPException(status_code=404, detail="基金不存在")
 
         nav_rows = conn.execute(
             "SELECT date, unit_nav, acc_nav, daily_return FROM fund_nav WHERE code=? ORDER BY date",
@@ -177,73 +177,72 @@ def api_fund_detail(code: str):
             "FROM fund_signal WHERE code=? ORDER BY date",
             (code,)
         ).fetchall()
+    finally:
         conn.close()
 
-        navs = [{"date": r["date"], "nav": round(float(r["unit_nav"]), 4),
-                 "daily_return": round(float(r["daily_return"] or 0), 4)} for r in nav_rows]
-        signals = [{"date": r["date"], "ma5": round(float(r["ma5"] or 0), 4),
-                    "ma20": round(float(r["ma20"] or 0), 4),
-                    "ma60": round(float(r["ma60"] or 0), 4),
-                    "ma120": round(float(r["ma120"] or 0), 4),
-                    "macd_dif": round(float(r["macd_dif"] or 0), 4),
-                    "macd_dea": round(float(r["macd_dea"] or 0), 4),
-                    "macd_hist": round(float(r["macd_hist"] or 0), 4),
-                    "rsi": round(float(r["rsi14"] or 50), 1),
-                    "kdj_k": round(float(r["kdj_k"] or 50), 1),
-                    "kdj_d": round(float(r["kdj_d"] or 50), 1),
-                    "kdj_j": round(float(r["kdj_j"] or 50), 1),
-                    "bb_upper": round(float(r["bb_upper"] or 0), 4),
-                    "bb_mid": round(float(r["bb_mid"] or 0), 4),
-                    "bb_lower": round(float(r["bb_lower"] or 0), 4),
-                    "bb_width": round(float(r["bb_width"] or 0) * 100, 2)}
-                   for r in signal_rows]
+    navs = [{"date": r["date"], "nav": round(float(r["unit_nav"]), 4),
+             "daily_return": round(float(r["daily_return"] or 0), 4)} for r in nav_rows]
+    signals = [{"date": r["date"], "ma5": round(float(r["ma5"] or 0), 4),
+                "ma20": round(float(r["ma20"] or 0), 4),
+                "ma60": round(float(r["ma60"] or 0), 4),
+                "ma120": round(float(r["ma120"] or 0), 4),
+                "macd_dif": round(float(r["macd_dif"] or 0), 4),
+                "macd_dea": round(float(r["macd_dea"] or 0), 4),
+                "macd_hist": round(float(r["macd_hist"] or 0), 4),
+                "rsi": round(float(r["rsi14"] or 50), 1),
+                "kdj_k": round(float(r["kdj_k"] or 50), 1),
+                "kdj_d": round(float(r["kdj_d"] or 50), 1),
+                "kdj_j": round(float(r["kdj_j"] or 50), 1),
+                "bb_upper": round(float(r["bb_upper"] or 0), 4),
+                "bb_mid": round(float(r["bb_mid"] or 0), 4),
+                "bb_lower": round(float(r["bb_lower"] or 0), 4),
+                "bb_width": round(float(r["bb_width"] or 0) * 100, 2)}
+               for r in signal_rows]
 
-        # 计算近几期收益
-        from engine.indicators import calc_period_return_from_returns
-        import pandas as pd
-        df_nav = pd.DataFrame(nav_rows, columns=["date", "unit_nav", "acc_nav", "daily_return"])
-        df_nav["daily_return"] = pd.to_numeric(df_nav["daily_return"], errors="coerce").fillna(0)
-        df_nav["unit_nav"] = pd.to_numeric(df_nav["unit_nav"], errors="coerce")
-        returns_series = df_nav["daily_return"]  # keep as Series for .tail()
-        rets = {
-            "r5d": round(calc_period_return_from_returns(returns_series, 5) * 100, 2),
-            "r10d": round(calc_period_return_from_returns(returns_series, 10) * 100, 2),
-            "r20d": round(calc_period_return_from_returns(returns_series, 20) * 100, 2),
-            "r60d": round(calc_period_return_from_returns(returns_series, 60) * 100, 2),
-            "r1y": round(calc_period_return_from_returns(returns_series, 252) * 100, 2),
-        }
+    # 计算近几期收益
+    from engine.indicators import calc_period_return_from_returns
+    import pandas as pd
+    df_nav = pd.DataFrame(nav_rows, columns=["date", "unit_nav", "acc_nav", "daily_return"])
+    df_nav["daily_return"] = pd.to_numeric(df_nav["daily_return"], errors="coerce").fillna(0)
+    df_nav["unit_nav"] = pd.to_numeric(df_nav["unit_nav"], errors="coerce")
+    returns_series = df_nav["daily_return"]  # keep as Series for .tail()
+    rets = {
+        "r5d": round(calc_period_return_from_returns(returns_series, 5) * 100, 2),
+        "r10d": round(calc_period_return_from_returns(returns_series, 10) * 100, 2),
+        "r20d": round(calc_period_return_from_returns(returns_series, 20) * 100, 2),
+        "r60d": round(calc_period_return_from_returns(returns_series, 60) * 100, 2),
+        "r1y": round(calc_period_return_from_returns(returns_series, 252) * 100, 2),
+    }
 
-        # 最新技术指标
-        last_sig = signals[-1] if signals else {}
+    # 最新技术指标
+    last_sig = signals[-1] if signals else {}
 
-        return {
-            "code": basic["code"],
-            "name": basic["name"],
-            "fund_type": basic["fund_type"],
-            "nav_history": navs,
-            "signals": signals,  # 全部历史
-            "latest": {
-                "rsi": last_sig.get("rsi", 50),
-                "ma5": last_sig.get("ma5", 0),
-                "ma20": last_sig.get("ma20", 0),
-                "ma60": last_sig.get("ma60", 0),
-                "ma120": last_sig.get("ma120", 0),
-                "macd_dif": last_sig.get("macd_dif", 0),
-                "macd_dea": last_sig.get("macd_dea", 0),
-                "nav": navs[-1]["nav"] if navs else 0,
-                "kdj_k": last_sig.get("kdj_k", 50),
-                "kdj_d": last_sig.get("kdj_d", 50),
-                "kdj_j": last_sig.get("kdj_j", 50),
-                "bb_upper": last_sig.get("bb_upper", 0),
-                "bb_mid": last_sig.get("bb_mid", 0),
-                "bb_lower": last_sig.get("bb_lower", 0),
-                "bb_width": last_sig.get("bb_width", 0),
-            },
-            "returns": rets,
-            "record_count": len(navs),
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    return {
+        "code": basic["code"],
+        "name": basic["name"],
+        "fund_type": basic["fund_type"],
+        "nav_history": navs,
+        "signals": signals,  # 全部历史
+        "latest": {
+            "rsi": last_sig.get("rsi", 50),
+            "ma5": last_sig.get("ma5", 0),
+            "ma20": last_sig.get("ma20", 0),
+            "ma60": last_sig.get("ma60", 0),
+            "ma120": last_sig.get("ma120", 0),
+            "macd_dif": last_sig.get("macd_dif", 0),
+            "macd_dea": last_sig.get("macd_dea", 0),
+            "nav": navs[-1]["nav"] if navs else 0,
+            "kdj_k": last_sig.get("kdj_k", 50),
+            "kdj_d": last_sig.get("kdj_d", 50),
+            "kdj_j": last_sig.get("kdj_j", 50),
+            "bb_upper": last_sig.get("bb_upper", 0),
+            "bb_mid": last_sig.get("bb_mid", 0),
+            "bb_lower": last_sig.get("bb_lower", 0),
+            "bb_width": last_sig.get("bb_width", 0),
+        },
+        "returns": rets,
+        "record_count": len(navs),
+    }
 
 
 # ============================================================
@@ -263,12 +262,11 @@ class PortfolioAdd(BaseModel):
 @app.post("/api/portfolio/add")
 def api_portfolio_add(body: PortfolioAdd):
     """添加一只持仓（同基金默认合并，自动计算均价）"""
+    conn = get_connection()
     try:
-        conn = get_connection()
         basic = conn.execute("SELECT name FROM fund_basic WHERE code=?", (body.code,)).fetchone()
         if not basic:
-            conn.close()
-            return {"error": "基金不存在"}
+            raise HTTPException(status_code=404, detail="基金不存在")
         name = basic["name"]
 
         # 计算份额：如果 shares 为 0 或未提供，从 buy_amount / buy_nav 推算
@@ -299,7 +297,6 @@ def api_portfolio_add(body: PortfolioAdd):
                     (new_amount, new_shares, new_nav, new_notes, existing["id"])
                 )
                 conn.commit()
-                conn.close()
                 return {"status": "ok", "message": f"已合并到 {name}（累计投入 ¥{new_amount:.0f}）"}
 
         conn.execute(
@@ -307,10 +304,13 @@ def api_portfolio_add(body: PortfolioAdd):
             (body.code, name, body.buy_date, body.buy_nav, shares, buy_amount, body.notes)
         )
         conn.commit()
-        conn.close()
         return {"status": "ok", "message": f"已添加 {name}"}
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 
 @app.get("/api/portfolio")
@@ -324,23 +324,27 @@ def api_portfolio_list():
 def api_portfolio_delete(holding_id: int):
     """删除一笔持仓"""
     conn = get_connection()
-    cur = conn.execute("DELETE FROM portfolio WHERE id=?", (holding_id,))
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
-    if deleted == 0:
-        return {"error": "持仓不存在"}
-    return {"status": "ok", "message": "已删除"}
+    try:
+        cur = conn.execute("DELETE FROM portfolio WHERE id=?", (holding_id,))
+        deleted = cur.rowcount
+        conn.commit()
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail="持仓不存在")
+        return {"status": "ok", "message": "已删除"}
+    finally:
+        conn.close()
 
 
 @app.put("/api/portfolio/{holding_id}")
 def api_portfolio_update(holding_id: int, notes: str = ""):
     """更新持仓备注"""
     conn = get_connection()
-    conn.execute("UPDATE portfolio SET notes=? WHERE id=?", (notes, holding_id))
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
+    try:
+        conn.execute("UPDATE portfolio SET notes=? WHERE id=?", (notes, holding_id))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
 
 
 class SellRequest(BaseModel):
@@ -352,18 +356,16 @@ class SellRequest(BaseModel):
 @app.put("/api/portfolio/{holding_id}/sell")
 def api_portfolio_sell(holding_id: int, body: SellRequest):
     """卖出一笔持仓（支持部分卖出：sell_pct<100 时按比例减仓）"""
+    conn = get_connection()
     try:
-        conn = get_connection()
         holding = conn.execute(
             "SELECT code, name, buy_nav, buy_amount, shares, status FROM portfolio WHERE id=?",
             (holding_id,)
         ).fetchone()
         if not holding:
-            conn.close()
-            return {"error": "持仓不存在"}
+            raise HTTPException(status_code=404, detail="持仓不存在")
         if holding["status"] == "sold":
-            conn.close()
-            return {"error": "该持仓已卖出"}
+            raise HTTPException(status_code=400, detail="该持仓已卖出")
 
         sell_date = body.sell_date or datetime.now().strftime("%Y-%m-%d")
         sell_nav = body.sell_nav
@@ -371,8 +373,7 @@ def api_portfolio_sell(holding_id: int, body: SellRequest):
 
         # 验证卖出比例范围
         if sell_pct < 1 or sell_pct > 100:
-            conn.close()
-            return {"error": "卖出比例需在1-100之间"}
+            raise HTTPException(status_code=400, detail="卖出比例需在1-100之间")
 
         shares = float(holding["shares"])
         buy_amount = float(holding["buy_amount"])
@@ -402,7 +403,6 @@ def api_portfolio_sell(holding_id: int, body: SellRequest):
             )
 
         conn.commit()
-        conn.close()
         return {
             "status": "ok",
             "code": holding["code"],
@@ -417,38 +417,44 @@ def api_portfolio_sell(holding_id: int, body: SellRequest):
             "profit": round(profit, 2),
             "profit_pct": round(profit_pct, 2),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 
 @app.get("/api/portfolio/history")
 def api_portfolio_history():
     """已卖出的历史持仓记录"""
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT id, code, name, buy_date, buy_nav, sell_date, sell_nav,
-               shares, buy_amount,
-               ROUND(shares * sell_nav, 2) as proceeds,
-               ROUND(shares * sell_nav - shares * buy_nav, 2) as profit,
-               CASE WHEN buy_amount > 0
-                    THEN ROUND((shares * sell_nav - buy_amount) / buy_amount * 100, 2)
-                    ELSE ROUND((sell_nav / buy_nav - 1) * 100, 2)
-               END as profit_pct
-        FROM portfolio WHERE status='sold' ORDER BY sell_date DESC
-    """).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute("""
+            SELECT id, code, name, buy_date, buy_nav, sell_date, sell_nav,
+                   shares, buy_amount,
+                   ROUND(shares * sell_nav, 2) as proceeds,
+                   ROUND(shares * sell_nav - shares * buy_nav, 2) as profit,
+                   CASE WHEN buy_amount > 0
+                        THEN ROUND((shares * sell_nav - buy_amount) / buy_amount * 100, 2)
+                        ELSE ROUND((sell_nav / buy_nav - 1) * 100, 2)
+                   END as profit_pct
+            FROM portfolio WHERE status='sold' ORDER BY sell_date DESC
+        """).fetchall()
 
-    history = []
-    for r in rows:
-        h = dict(r)
-        total_buy = float(r["buy_nav"]) * float(r["shares"])
-        total_sell = float(r["sell_nav"]) * float(r["shares"])
-        h["total_cost"] = round(total_buy, 2)
-        h["total_proceeds"] = round(total_sell, 2)
-        h["total_profit"] = round(total_sell - total_buy, 2)
-        history.append(h)
+        history = []
+        for r in rows:
+            h = dict(r)
+            total_buy = float(r["buy_nav"]) * float(r["shares"])
+            total_sell = float(r["sell_nav"]) * float(r["shares"])
+            h["total_cost"] = round(total_buy, 2)
+            h["total_proceeds"] = round(total_sell, 2)
+            h["total_profit"] = round(total_sell - total_buy, 2)
+            history.append(h)
 
-    return {"status": "ok", "count": len(history), "history": history}
+        return {"status": "ok", "count": len(history), "history": history}
+    finally:
+        conn.close()
 
 
 @app.get("/api/portfolio/analysis")
@@ -465,15 +471,17 @@ def api_fund_advice(code: str):
 
     # 查询是否已持有，获取买入成本用于准确的卖出信号
     conn = get_connection()
-    holding = conn.execute(
-        "SELECT buy_nav, buy_date FROM portfolio WHERE code=? AND (status IS NULL OR status='active' OR status='') LIMIT 1",
-        (code,)
-    ).fetchone()
-    conn.close()
+    try:
+        holding = conn.execute(
+            "SELECT buy_nav, buy_date FROM portfolio WHERE code=? AND (status IS NULL OR status='active' OR status='') LIMIT 1",
+            (code,)
+        ).fetchone()
+    finally:
+        conn.close()
 
     buy = get_buy_advice(code)
     if "error" in buy:
-        return buy
+        raise HTTPException(status_code=404, detail=buy["error"])
 
     buy_nav = float(holding["buy_nav"]) if holding else None
     buy_date = holding["buy_date"] if holding else None
@@ -492,22 +500,24 @@ def api_portfolio_risk():
 def api_fund_technicals(code: str):
     """技术指标仪表盘：RSI/MACD/KDJ/布林带/均线 一览"""
     conn = get_connection()
-    basic = conn.execute(
-        "SELECT name, fund_type FROM fund_basic WHERE code=?", (code,)
-    ).fetchone()
-    sig_row = conn.execute(
-        "SELECT * FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1", (code,)
-    ).fetchone()
-    # 获取前一日信号用于对比
-    sig_prev = conn.execute(
-        "SELECT * FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1 OFFSET 1", (code,)
-    ).fetchone()
-    conn.close()
+    try:
+        basic = conn.execute(
+            "SELECT name, fund_type FROM fund_basic WHERE code=?", (code,)
+        ).fetchone()
+        sig_row = conn.execute(
+            "SELECT * FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1", (code,)
+        ).fetchone()
+        # 获取前一日信号用于对比
+        sig_prev = conn.execute(
+            "SELECT * FROM fund_signal WHERE code=? ORDER BY date DESC LIMIT 1 OFFSET 1", (code,)
+        ).fetchone()
 
-    if not basic:
-        return {"error": "基金不存在"}
-    if not sig_row:
-        return {"error": "暂无技术指标数据"}
+        if not basic:
+            raise HTTPException(status_code=404, detail="基金不存在")
+        if not sig_row:
+            raise HTTPException(status_code=404, detail="暂无技术指标数据")
+    finally:
+        conn.close()
 
     def _safe_float(val, default=0):
         return round(float(val or default), 4)

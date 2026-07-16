@@ -64,9 +64,14 @@ async function load(force) {
     }
 }
 
+// 跨引擎一致性：记录Top20推荐基金代码，用于持仓页冲突检测
+var _top20Codes = [];
+
 function render(data) {
     var h = "";
+    _top20Codes = [];
     data.results.forEach(function (r, i) {
+        _top20Codes.push(r.code);
         var n = i + 1, top = n <= 3 ? " top" : "";
         h += '<tr class="clickable" onclick="showDetail(\'' + escAttr(r.code) + '\', \'' + escAttr(r.name) + '\')">';
         h += '<td class="rnk' + n + top + '">' + n + '</td>';
@@ -153,7 +158,7 @@ async function showDetail(code, name) {
         renderStats(d);
         renderTechnicals(code);
     } catch (e) {
-        document.getElementById("detail-stats").innerHTML = '<div class="error">加载失败: ' + e.message + '</div>';
+        document.getElementById("detail-stats").innerHTML = '<div class="error">加载失败: ' + escHtml(e.message) + '</div>';
     }
 }
 
@@ -354,33 +359,39 @@ document.getElementById("refresh-btn").onclick = function () {
 function renderAdvice(d) {
     var container = document.getElementById("detail-advice");
     container.innerHTML = '<div class="loading">加载买卖建议...</div>';
-    fetch(API + "/fund/" + d.code + "/advice")
+
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function () { controller.abort(); }, 30000);
+
+    fetch(API + "/fund/" + d.code + "/advice", { signal: controller.signal })
         .then(function (r) { return r.json(); })
         .then(function (adv) {
+            clearTimeout(timeoutId);
             if (adv.buy && adv.sell) {
                 var h = '<h3>交易建议</h3>';
 
                 // === 买入建议 ===
                 var b = adv.buy;
                 h += '<div class="advice-card">';
-                h += '<div class="advice-title">买入建议：<span class="' + (b.dca_multiplier >= 1 ? 'up' : '') + '">' + b.buy_urgency + '</span></div>';
+                h += '<div class="advice-title">买入建议：<span class="' + (b.dca_multiplier >= 1 ? 'up' : '') + '">' + escHtml(b.buy_urgency) + '</span></div>';
                 h += '<div class="advice-body">';
-                h += '<p>估值状态：<b>' + b.valuation.label + '</b>（历史分位 ' + b.valuation.pct + '%）</p>';
-                h += '<p>定投倍数：<b>' + b.dca_multiplier + 'x</b> | 建议仓位：<b>' + b.suggested_position + '</b></p>';
-                h += '<p>入场计划：' + b.batch_plan + '</p>';
+                h += '<p>估值状态：<b>' + escHtml(b.valuation.label) + '</b>（历史分位 ' + b.valuation.pct + '%）</p>';
+                h += '<p>定投倍数：<b>' + b.dca_multiplier + 'x</b> | 建议仓位：<b>' + escHtml(b.suggested_position) + '</b></p>';
+                h += '<p>入场计划：' + escHtml(b.batch_plan) + '</p>';
                 if (b.entry_points && b.entry_points.length > 0) {
                     h += '<p>参考价位：';
                     b.entry_points.forEach(function (ep) {
-                        h += '<span class="tag y">' + ep.level + ': ' + ep.price + '</span> ';
+                        h += '<span class="tag y">' + escHtml(ep.level) + ': ' + ep.price + '</span> ';
                     });
                     h += '</p>';
                 }
                 if (b.grid_params) {
                     h += '<p>网格参数：间距<b>' + b.grid_params.spacing + '%</b> | ' + b.grid_params.suggested_grids + '格 | 区间[' + b.grid_params.lower + ' ~ ' + b.grid_params.upper + ']</p>';
+                    if (b.grid_params.note) h += '<p class="grid-note">' + escHtml(b.grid_params.note) + '</p>';
                 }
                 if (b.risk_warnings && b.risk_warnings.length > 0) {
                     h += '<div class="risk">';
-                    b.risk_warnings.forEach(function (w) { h += '<p>' + w + '</p>'; });
+                    b.risk_warnings.forEach(function (w) { h += '<p>' + escHtml(w) + '</p>'; });
                     h += '</div>';
                 }
                 h += '</div></div>';
@@ -389,7 +400,7 @@ function renderAdvice(d) {
                 var s = adv.sell;
                 var scls = s.sell_score >= 60 ? 'r' : s.sell_score >= 40 ? 'o' : s.sell_score >= 20 ? 'y' : 'g';
                 h += '<div class="advice-card">';
-                h += '<div class="advice-title">卖出信号：<span class="tag ' + scls + '">' + s.summary + '</span> <small>(紧迫度: ' + (s.sell_score || 0) + '/100)</small></div>';
+                h += '<div class="advice-title">卖出信号：<span class="tag ' + scls + '">' + escHtml(s.summary) + '</span> <small>(紧迫度: ' + (s.sell_score || 0) + '/100)</small></div>';
                 h += '<div class="advice-body">';
                 if (s.profit_pct !== null && s.profit_pct !== undefined) {
                     h += '<p>持仓盈亏：<b class="' + (s.profit_pct >= 0 ? 'up' : 'down') + '">' + fmt(s.profit_pct) + '</b>';
@@ -403,7 +414,7 @@ function renderAdvice(d) {
                     h += '<div class="signal-list">';
                     s.signals.forEach(function (sig) {
                         var lvl = sig.level >= 3 ? 'r' : sig.level >= 2 ? 'o' : sig.level >= 1 ? 'y' : '';
-                        h += '<div class="signal-item ' + lvl + '"><b>' + sig.type + '</b>：' + sig.msg + '</div>';
+                        h += '<div class="signal-item ' + lvl + '"><b>' + escHtml(sig.type) + '</b>：' + escHtml(sig.msg) + '</div>';
                     });
                     h += '</div>';
                 }
@@ -412,24 +423,24 @@ function renderAdvice(d) {
                 if (s.action_plan) {
                     h += '<div class="action-plan">';
                     var lvlCls = s.action_plan.level === '清仓' ? 'r' : s.action_plan.level === '减仓' ? 'o' : 'y';
-                    h += '<div class="ap-title"><span class="tag ' + lvlCls + '">' + (s.action_plan.level || '') + '</span> 综合评分: ' + (s.sell_score || 0) + '/100';
+                    h += '<div class="ap-title"><span class="tag ' + lvlCls + '">' + escHtml(s.action_plan.level || '') + '</span> 综合评分: ' + (s.sell_score || 0) + '/100';
                     if (s.action_plan.suggested_sell_pct > 0) {
                         h += ' — 建议卖出 ' + s.action_plan.suggested_sell_pct + '%';
                     }
                     h += '</div>';
                     if (s.action_plan.action) {
-                        h += '<div class="ap-item"><b>建议操作：</b>' + s.action_plan.action + '</div>';
+                        h += '<div class="ap-item"><b>建议操作：</b>' + escHtml(s.action_plan.action) + '</div>';
                     }
                     if (s.action_plan.triggered_reasons && s.action_plan.triggered_reasons.length > 0) {
                         h += '<div class="ap-title">触发原因：</div>';
                         s.action_plan.triggered_reasons.forEach(function (r) {
-                            h += '<div class="ap-item"><span class="tag o">触发</span> ' + r + '</div>';
+                            h += '<div class="ap-item"><span class="tag o">触发</span> ' + escHtml(r) + '</div>';
                         });
                     }
                     if (s.action_plan.monitor_items && s.action_plan.monitor_items.length > 0) {
                         h += '<div class="ap-title">持续监控：</div>';
                         s.action_plan.monitor_items.forEach(function (m) {
-                            h += '<div class="ap-item"><span class="tag y">监控</span> ' + m + '</div>';
+                            h += '<div class="ap-item"><span class="tag y">监控</span> ' + escHtml(m) + '</div>';
                         });
                     }
                     h += '<div class="ap-next">下次复查：' + (s.action_plan.next_review_date || '-') + '</div>';
@@ -441,7 +452,12 @@ function renderAdvice(d) {
                 container.innerHTML = '<div class="error">建议加载失败</div>';
             }
         }).catch(function (e) {
-            container.innerHTML = '<div class="error">建议加载失败: ' + e.message + '</div>';
+            clearTimeout(timeoutId);
+            if (e.name === "AbortError") {
+                container.innerHTML = '<div class="error">加载建议超时</div>';
+            } else {
+                container.innerHTML = '<div class="error">建议加载失败: ' + escHtml(e.message) + '</div>';
+            }
         });
 }
 
@@ -505,27 +521,27 @@ function renderPortfolioSummary(data) {
     // 警告
     if (data.warnings && data.warnings.length > 0) {
         data.warnings.forEach(function (w) {
-            h += '<div class="warn-msg">⚠ ' + w + '</div>';
+            h += '<div class="warn-msg">⚠ ' + escHtml(w) + '</div>';
         });
     }
 
     // 相关性警告
     if (data.correlation_warnings && data.correlation_warnings.length > 0) {
         data.correlation_warnings.forEach(function (cw) {
-            h += '<div class="warn-msg">🔗 ' + cw.msg + '</div>';
+            h += '<div class="warn-msg">🔗 ' + escHtml(cw.msg) + '</div>';
         });
     }
 
     // 再平衡建议
     if (data.rebalance_advice) {
-        h += '<div class="rebalance-msg">💡 ' + data.rebalance_advice + '</div>';
+        h += '<div class="rebalance-msg">💡 ' + escHtml(data.rebalance_advice) + '</div>';
     }
 
     // 再平衡操作清单
     if (data.rebalance_actions && data.rebalance_actions.length > 0) {
         h += '<div class="rebalance-actions">';
         data.rebalance_actions.forEach(function (ra) {
-            h += '<div class="ra-item"><span class="tag ' + (ra.priority === 'high' ? 'r' : 'y') + '">' + ra.priority + '</span> ' + ra.action + '：' + ra.detail + '</div>';
+            h += '<div class="ra-item"><span class="tag ' + (ra.priority === 'high' ? 'r' : 'y') + '">' + escHtml(ra.priority) + '</span> ' + escHtml(ra.action) + '：' + escHtml(ra.detail) + '</div>';
         });
         h += '</div>';
     }
@@ -534,7 +550,7 @@ function renderPortfolioSummary(data) {
     if (data.sell_priority && data.sell_priority.length > 0) {
         h += '<div class="sell-priority">🔴 优先关注卖出：';
         data.sell_priority.forEach(function (sp) {
-            h += '<span class="tag r">' + sp.name + '(' + fmt(sp.profit_pct) + ')</span> ';
+            h += '<span class="tag r">' + escHtml(sp.name) + '(' + fmt(sp.profit_pct) + ')</span> ';
         });
         h += '</div>';
     }
@@ -569,7 +585,12 @@ function renderPortfolioList(data) {
         var scls = sa >= 70 ? 'r' : sa >= 45 ? 'o' : sa >= 20 ? 'y' : 'g';
         var suggestedPct = d.suggested_sell_pct || 0;
         var pctDisplay = suggestedPct > 0 ? '<span class="suggest-pct">建议卖' + suggestedPct + '%</span>' : '';
-        h += '<td title="卖出紧迫度: ' + sa + '/100"><span class="tag ' + scls + '">' + escHtml(d.sell_summary) + '</span> ' + pctDisplay + '</td>';
+        h += '<td title="卖出紧迫度: ' + sa + '/100"><span class="tag ' + scls + '">' + escHtml(d.sell_summary) + '</span> ' + pctDisplay;
+        // 跨引擎一致性检测：该基金是否同时出现在Top20推荐中?
+        if (_top20Codes.indexOf(d.code) >= 0 && sa > 0) {
+            h += ' <span class="tag r" title="该基金同时出现在买入推荐和卖出信号中，请结合估值+趋势判断">⚠买卖冲突</span>';
+        }
+        h += '</td>';
         var btnCls = sa >= 70 ? 'btn-sell-urgent' : sa >= 45 ? 'btn-sell-warn' : 'btn-sell-sm';
         h += '<td><button class="' + btnCls + '" onclick="sellHolding(' + d.id + ',' + d.current_nav + ',\'' + escAttr(d.name) + '\',' + suggestedPct + ',' + sa + ')">卖出</button> ';
         h += '<button class="btn-ghost-sm" onclick="deleteHolding(' + d.id + ')">删除</button></td>';
@@ -582,10 +603,16 @@ function renderPortfolioList(data) {
 function deleteHolding(id) {
     if (!confirm("确认删除这笔持仓记录？")) return;
     fetch(API + "/portfolio/" + id, { method: "DELETE" })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        })
         .then(function (d) {
             if (d.error) { alert(d.error); return; }
             loadPortfolio(); loadHistory();
+        })
+        .catch(function (e) {
+            alert("删除失败: " + e.message);
         });
 }
 
@@ -628,7 +655,10 @@ function sellHolding(id, currentNav, name, suggestedPct, sellScore) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sell_nav: sellNavNum, sell_pct: sellPct })
     })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        })
         .then(function (data) {
             if (data.error) { alert(data.error); return; }
             var resultMsg = sellPct >= 100 ? '已全部卖出 ' + data.name : '已卖出 ' + data.name + ' (' + data.sell_pct + '%)';
@@ -636,6 +666,9 @@ function sellHolding(id, currentNav, name, suggestedPct, sellScore) {
                 '\n盈亏: ' + (data.profit >= 0 ? '+' : '') + data.profit + '元 (' +
                 (data.profit_pct >= 0 ? '+' : '') + data.profit_pct + '%)');
             loadPortfolio(); loadHistory();
+        })
+        .catch(function (e) {
+            alert("卖出失败: " + e.message);
         });
 }
 
